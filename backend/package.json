@@ -6,6 +6,7 @@
   "scripts": {
     "start": "nest start",
     "start:dev": "ts-node-dev --poll --transpile-only --ignore-watch node_modules --respawn src/main.ts",
+    "start:prod": "node dist/main.js",
     "build": "tsc -p tsconfig.build.json",
     "lint": "eslint '{src,test}/**/*.{ts,js}' --fix",
     "users:make-admin": "ts-node src/scripts/make-admin.ts",
