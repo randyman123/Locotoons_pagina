@@ -17,16 +17,33 @@ import { UsersModule } from "./users/users.module";
     TypeOrmModule.forRootAsync({
       imports: [AppConfigModule],
       inject: [ConfigService],
-      useFactory: async (configService: ConfigService) => ({
-        type: "mysql",
-        host: configService.get("DB_HOST", "localhost"),
-        port: Number(configService.get("DB_PORT", 3306)),
-        username: configService.get("DB_USERNAME", "root"),
-        password: configService.get("DB_PASSWORD", "password"),
-        database: configService.get("DB_NAME", "locotoons_dev"),
-        entities: [__dirname + "/**/*.entity{.ts,.js}"],
-        synchronize: true,
-      }),
+      useFactory: async (configService: ConfigService) => {
+        const dbPort =
+          configService.get("DB_PORT") || configService.get("MYSQLPORT") || 3306;
+
+        return {
+          type: "mysql",
+          host:
+            configService.get("DB_HOST") ||
+            configService.get("MYSQLHOST") ||
+            "localhost",
+          port: Number(dbPort),
+          username:
+            configService.get("DB_USERNAME") ||
+            configService.get("MYSQLUSER") ||
+            "root",
+          password:
+            configService.get("DB_PASSWORD") ||
+            configService.get("MYSQLPASSWORD") ||
+            "password",
+          database:
+            configService.get("DB_NAME") ||
+            configService.get("MYSQLDATABASE") ||
+            "locotoons_dev",
+          entities: [__dirname + "/**/*.entity{.ts,.js}"],
+          synchronize: true,
+        };
+      },
     }),
     AuthModule,
     UsersModule,
