@@ -21,6 +21,13 @@ import { UsersModule } from "./users/users.module";
         const dbPort =
           configService.get("DB_PORT") || configService.get("MYSQLPORT") || 3306;
 
+        console.log("Database env check", {
+          DB_HOST: configService.get("DB_HOST"),
+          DB_PORT: configService.get("DB_PORT"),
+          MYSQLHOST: configService.get("MYSQLHOST"),
+          MYSQLPORT: configService.get("MYSQLPORT"),
+        });
+
         return {
           type: "mysql",
           host:
