@@ -5,17 +5,19 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, Repository } from 'typeorm';
+import { DataSource, In, Repository } from 'typeorm';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { Order } from './entities/order.entity';
 import { OrderItem } from './entities/order-item.entity';
 import { Product } from '../products/entities/product.entity';
+import { User } from '../users/entities/user.entity';
 
 @Injectable()
 export class OrdersService {
   constructor(
     private readonly dataSource: DataSource,
     @InjectRepository(Order) private readonly orderRepository: Repository<Order>,
+    @InjectRepository(User) private readonly userRepository: Repository<User>,
   ) {}
 
   async create(userId: number | null, createOrderDto: CreateOrderDto) {
@@ -110,6 +112,7 @@ export class OrdersService {
         customerEmail: customerEmail ?? null,
         customerPhone: customerPhone ?? null,
         status: 'pending',
+        paymentMethod: createOrderDto.paymentMethod ?? 'bank_transfer',
         shippingAddress: createOrderDto.shippingAddress,
         total,
       });
@@ -139,12 +142,14 @@ export class OrdersService {
     });
   }
 
-  findAllForUser(currentUser: { userId: number; role?: string }) {
+  async findAllForUser(currentUser: { userId: number; role?: string }) {
     if (currentUser.role === 'admin') {
-      return this.orderRepository.find({
+      const orders = await this.orderRepository.find({
         relations: ['items'],
         order: { createdAt: 'DESC' },
       });
+
+      return this.withCustomerType(orders);
     }
 
     return this.orderRepository.find({
@@ -169,6 +174,11 @@ export class OrdersService {
       throw new ForbiddenException('No puedes consultar ordenes de otro usuario');
     }
 
+    if (currentUser.role === 'admin') {
+      const [decoratedOrder] = await this.withCustomerType([order]);
+      return decoratedOrder;
+    }
+
     return order;
   }
 
@@ -183,6 +193,34 @@ export class OrdersService {
     }
 
     order.status = status;
-    return this.orderRepository.save(order);
+    const savedOrder = await this.orderRepository.save(order);
+    const [decoratedOrder] = await this.withCustomerType([savedOrder]);
+    return decoratedOrder;
+  }
+
+  private async withCustomerType(orders: Order[]) {
+    const userIds = orders
+      .map((order) => order.userId)
+      .filter((userId): userId is number => typeof userId === 'number');
+
+    const users =
+      userIds.length > 0
+        ? await this.userRepository.find({
+            where: { id: In([...new Set(userIds)]) },
+            select: ['id', 'name', 'email'],
+          })
+        : [];
+    const usersById = new Map(users.map((user) => [user.id, user]));
+
+    return orders.map((order) => {
+      const user = order.userId ? usersById.get(order.userId) : null;
+
+      return {
+        ...order,
+        customerType: order.userId ? 'registered' : 'guest',
+        accountName: user?.name ?? null,
+        accountEmail: user?.email ?? null,
+      };
+    });
   }
 }

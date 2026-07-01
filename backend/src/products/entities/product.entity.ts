@@ -16,7 +16,7 @@ export class Product {
   @Column('text')
   description: string;
 
-  @Column('decimal', { precision: 10, scale: 2 })
+  @Column('decimal', { precision: 10, scale: 0 })
   price: number;
 
   @Column({ default: 0 })
@@ -30,6 +30,9 @@ export class Product {
 
   @Column({ default: true })
   isVisible: boolean;
+
+  @Column({ default: false })
+  featured: boolean;
 
   @ManyToOne(() => Category, (category) => category.products, { nullable: true })
   category?: Category;

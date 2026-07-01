@@ -4,6 +4,7 @@ import {
   ArrayMinSize,
   IsArray,
   IsEmail,
+  IsIn,
   IsInt,
   IsNotEmpty,
   IsNumber,
@@ -52,6 +53,15 @@ export class CreateOrderDto {
   @IsNotEmpty()
   @IsString()
   shippingAddress: string;
+
+  @ApiProperty({
+    example: 'bank_transfer',
+    enum: ['bank_transfer', 'whatsapp_coordination'],
+    required: false,
+  })
+  @IsOptional()
+  @IsIn(['bank_transfer', 'whatsapp_coordination'])
+  paymentMethod?: 'bank_transfer' | 'whatsapp_coordination';
 
   @ApiProperty({ type: [OrderItemDto] })
   @IsArray()

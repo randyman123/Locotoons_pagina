@@ -3,8 +3,8 @@ import { Type } from 'class-transformer';
 import {
   IsArray,
   IsBoolean,
+  IsInt,
   IsNotEmpty,
-  IsNumber,
   IsOptional,
   IsString,
   Min,
@@ -39,13 +39,13 @@ export class CreateProductDto {
   @IsString()
   description: string;
 
-  @ApiProperty({ example: 49.99 })
-  @IsNumber()
+  @ApiProperty({ example: 24990 })
+  @IsInt()
   @Min(0)
   price: number;
 
   @ApiProperty({ example: 20 })
-  @IsNumber()
+  @IsInt()
   @Min(0)
   stock: number;
 
@@ -56,7 +56,7 @@ export class CreateProductDto {
 
   @ApiProperty({ example: 1, required: false })
   @IsOptional()
-  @IsNumber()
+  @IsInt()
   @Min(1)
   categoryId?: number;
 
@@ -64,6 +64,11 @@ export class CreateProductDto {
   @IsOptional()
   @IsBoolean()
   isVisible?: boolean;
+
+  @ApiProperty({ example: false, required: false })
+  @IsOptional()
+  @IsBoolean()
+  featured?: boolean;
 
   @ApiPropertyOptional({
     type: [ProductSpecificationDto],

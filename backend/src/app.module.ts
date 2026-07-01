@@ -9,6 +9,7 @@ import { CategoriesModule } from "./categories/categories.module";
 import { ProductsModule } from "./products/products.module";
 import { CartsModule } from "./carts/carts.module";
 import { OrdersModule } from "./orders/orders.module";
+import { PaymentsModule } from "./payments/payments.module";
 import { UsersModule } from "./users/users.module";
 
 @Module({
@@ -58,6 +59,7 @@ import { UsersModule } from "./users/users.module";
     ProductsModule,
     CartsModule,
     OrdersModule,
+    PaymentsModule,
   ],
   controllers: [AppController],
   providers: [AppService],

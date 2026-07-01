@@ -17,6 +17,8 @@ import {
   useSearchParams,
 } from 'react-router-dom';
 import './App.css';
+import { SITE } from './config/site.config';
+import { BUSINESS } from './config/business.config';
 
 type Category = {
   id: number;
@@ -41,6 +43,9 @@ type Product = {
   imageUrl?: string;
   specifications?: Array<{ label: string; value: string }>;
   isVisible?: boolean;
+  featured?: boolean;
+  createdAt?: string;
+  updatedAt?: string;
   category?: ProductCategory | null;
 };
 
@@ -119,10 +124,31 @@ type Order = {
   customerEmail?: string | null;
   customerPhone?: string | null;
   status: string;
+  paymentMethod?: PaymentMethod;
   total: number | string;
   shippingAddress: string;
   createdAt: string;
   items: OrderItem[];
+  customerType?: 'guest' | 'registered';
+  accountName?: string | null;
+  accountEmail?: string | null;
+};
+
+type ProductSpecificationFormState = {
+  label: string;
+  value: string;
+};
+
+type PaymentMethod = 'bank_transfer';
+
+type ProductSortOption = 'newest' | 'oldest' | 'price_desc' | 'price_asc' | 'low_stock';
+
+type OrderConfirmation = {
+  order: Order;
+  items: CartItem[];
+  customerName?: string;
+  customerEmail?: string;
+  customerPhone?: string;
 };
 
 type ProductFormState = {
@@ -135,17 +161,19 @@ type ProductFormState = {
   imageUrl: string;
   categoryId: string;
   isVisible: boolean;
-  specificationsText: string;
+  featured: boolean;
+  specifications: ProductSpecificationFormState[];
 };
 
 const ADMIN_ORDER_STATUSES = ['pending', 'paid', 'shipped', 'delivered', 'cancelled'] as const;
+const SPECIFICATION_LABEL_PLACEHOLDERS = SITE.specificationLabelPlaceholders;
 
-const AUTH_TOKEN_KEY = 'locotoons_auth_token';
-const STOREFRONT_REFRESH_EVENT = 'locotoons:storefront-refresh';
-const CART_REFRESH_EVENT = 'locotoons:cart-refresh';
-const GUEST_CART_KEY = 'locotoons_guest_cart';
-const CUSTOMER_PROFILE_KEY = 'locotoons_customer_profile';
-const WHATSAPP_PHONE_NUMBER = '56912345678';
+const AUTH_TOKEN_KEY = BUSINESS.storageKeys.authToken;
+const STOREFRONT_REFRESH_EVENT = BUSINESS.events.storefrontRefresh;
+const CART_REFRESH_EVENT = BUSINESS.events.cartRefresh;
+const GUEST_CART_KEY = BUSINESS.storageKeys.guestCart;
+const CUSTOMER_PROFILE_KEY = BUSINESS.storageKeys.customerProfile;
+const WHATSAPP_PHONE_NUMBER = BUSINESS.contact.whatsappPhone;
 const STORE_CATEGORY_PRESETS = [
   {
     name: 'Pokémon',
@@ -221,11 +249,11 @@ function decodeJwtPayload(token: string): AuthUser | null {
 
 function formatPrice(value: number | string) {
   const amount = typeof value === 'string' ? Number(value) : value;
-  return new Intl.NumberFormat('es-CL', {
+  return new Intl.NumberFormat(BUSINESS.locale, {
     style: 'currency',
-    currency: 'USD',
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
+    currency: BUSINESS.currency,
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0,
   }).format(amount);
 }
 
@@ -244,6 +272,7 @@ function normalizeProduct(product: Product): Product {
     imageUrl: product.imageUrl ?? undefined,
     specifications: Array.isArray(product.specifications) ? product.specifications : [],
     isVisible: product.isVisible ?? true,
+    featured: product.featured ?? false,
     category: product.category
       ? {
           id: product.category.id,
@@ -367,7 +396,8 @@ function createEmptyProductForm(): ProductFormState {
     imageUrl: '',
     categoryId: '',
     isVisible: true,
-    specificationsText: '',
+    featured: false,
+    specifications: [{ label: '', value: '' }],
   };
 }
 
@@ -388,37 +418,85 @@ function getOrderStatusLabel(status: string) {
   }
 }
 
-function formatSpecificationsInput(specifications?: Array<{ label: string; value: string }>) {
-  return (specifications ?? [])
-    .map((specification) => `${specification.label}: ${specification.value}`)
-    .join('\n');
+function getOrderCustomerName(order: Order) {
+  return order.customerName ?? order.accountName ?? `Usuario #${order.userId ?? 'N/A'}`;
 }
 
-function parseSpecificationsInput(value: string) {
-  const rows = value
-    .split('\n')
-    .map((row) => row.trim())
-    .filter(Boolean);
+function getOrderCustomerEmail(order: Order) {
+  return order.customerEmail ?? order.accountEmail ?? null;
+}
 
-  return rows.map((row) => {
-    const separatorIndex = row.indexOf(':');
+function getOrderCustomerTypeLabel(order: Order) {
+  return order.customerType === 'registered' || order.userId ? 'Usuario registrado' : 'Invitado';
+}
 
-    if (separatorIndex === -1) {
-      throw new Error('Cada especificacion debe usar el formato "Etiqueta: Valor".');
-    }
+function getPaymentMethodLabel(_paymentMethod?: PaymentMethod) {
+  return BUSINESS.payment.label;
+}
 
-    const label = row.slice(0, separatorIndex).trim();
-    const specificationValue = row.slice(separatorIndex + 1).trim();
+function buildOrderWhatsAppMessage(
+  order: Pick<Order, 'id' | 'total'>,
+  items: CartItem[],
+  customer?: { name?: string; email?: string; phone?: string },
+) {
+  const products = items
+    .map((item) => `- ${item.product.title} x${item.quantity}`)
+    .join('\n');
+  const contactLines = [
+    customer?.name ? `Nombre: ${customer.name}` : null,
+    customer?.email ? `Email: ${customer.email}` : null,
+    customer?.phone ? `Telefono: ${customer.phone}` : null,
+  ].filter(Boolean);
 
-    if (!label || !specificationValue) {
-      throw new Error('Cada especificacion debe incluir etiqueta y valor.');
-    }
+  return [
+    `Hola, adjunto comprobante de transferencia de la orden #${order.id}.`,
+    products ? `Productos:\n${products}` : null,
+    `Total: ${formatPrice(order.total)}`,
+    contactLines.length > 0 ? `Contacto:\n${contactLines.join('\n')}` : null,
+  ]
+    .filter(Boolean)
+    .join('\n\n');
+}
 
+function createSpecificationRows(specifications?: Array<{ label: string; value: string }>) {
+  const rows = (specifications ?? [])
+    .map((specification) => ({
+      label: specification.label ?? '',
+      value: specification.value ?? '',
+    }))
+    .filter((specification) => specification.label || specification.value);
+
+  return rows.length > 0 ? rows : [{ label: '', value: '' }];
+}
+
+function normalizeSpecificationsInput(specifications: ProductSpecificationFormState[]) {
+  return specifications
+    .map((specification) => ({
+      label: specification.label.trim(),
+      value: specification.value.trim(),
+    }))
+    .filter((specification) => specification.label || specification.value);
+}
+
+function getStockBadge(stock: number) {
+  if (stock <= 0) {
     return {
-      label,
-      value: specificationValue,
+      className: 'admin-stock-badge admin-stock-badge-empty',
+      label: 'Sin stock',
     };
-  });
+  }
+
+  if (stock <= 5) {
+    return {
+      className: 'admin-stock-badge admin-stock-badge-low',
+      label: 'Stock bajo',
+    };
+  }
+
+  return {
+    className: 'admin-stock-badge',
+    label: 'Stock OK',
+  };
 }
 
 function getCategoryPreset(category?: Pick<Category, 'name' | 'slug'> | Pick<ProductCategory, 'name' | 'slug'> | null) {
@@ -506,7 +584,7 @@ function filterStoreProducts(products: Product[], categorySlug: string | null, s
       : true;
 
     return matchesCategory && matchesSearch;
-  });
+  }).sort((left, right) => Number(right.featured === true) - Number(left.featured === true));
 }
 
 function useStorefrontData() {
@@ -788,11 +866,13 @@ function AdminProductImage({
   title,
   categoryName,
   compact = false,
+  onImageError,
 }: {
   imageUrl?: string;
   title: string;
   categoryName: string;
   compact?: boolean;
+  onImageError?: () => void;
 }) {
   const [imageFailed, setImageFailed] = useState(false);
 
@@ -805,11 +885,22 @@ function AdminProductImage({
   return (
     <div className={wrapperClassName}>
       {imageUrl && !imageFailed ? (
-        <img src={imageUrl} alt={title} onError={() => setImageFailed(true)} />
+        <img
+          src={imageUrl}
+          alt={title}
+          onError={() => {
+            setImageFailed(true);
+            onImageError?.();
+          }}
+        />
       ) : (
         <div className="admin-image-placeholder">
           <strong>{title}</strong>
-          <span>{categoryName}</span>
+          <span>
+            {imageUrl && imageFailed
+              ? 'No pudimos cargar esa imageUrl'
+              : categoryName}
+          </span>
         </div>
       )}
     </div>
@@ -869,11 +960,11 @@ function SiteHeader() {
   return (
     <header className="site-header">
       <div className="brand-block">
-        <p className="brand-kicker">Lo mejor del coleccionismo</p>
+        <p className="brand-kicker">{SITE.brandKicker}</p>
         <Link to="/" className="brand-mark">
-          Locotoons
+          {SITE.name}
         </Link>
-        <p className="brand-subtitle">Figuras, coleccionables, anime y regalos con estilo geek</p>
+        <p className="brand-subtitle">{SITE.brandSubtitle}</p>
       </div>
 
       <form className="search-panel" onSubmit={handleSearchSubmit}>
@@ -885,7 +976,7 @@ function SiteHeader() {
             id="site-search"
             className="search-input"
             type="search"
-            placeholder="Busca figuras, mangas, accesorios..."
+            placeholder={SITE.searchPlaceholder}
             value={searchValue}
             onChange={(event) => setSearchValue(event.target.value)}
           />
@@ -971,24 +1062,24 @@ function SiteFooter() {
   return (
     <footer className="site-footer">
       <div className="footer-block">
-        <strong>Locotoons</strong>
-        <span>Tienda online de figuras, coleccionables, anime y regalos para fans de la cultura pop.</span>
-        <span>Atencion cercana para ayudarte a elegir, reservar y comprar con confianza.</span>
+        <strong>{SITE.name}</strong>
+        <span>{SITE.footer.description}</span>
+        <span>{SITE.footer.tagline}</span>
       </div>
       <div className="footer-block">
         <strong>Contacto</strong>
-        <a href="https://wa.me/56912345678" target="_blank" rel="noreferrer">
-          WhatsApp: +56 9 1234 5678
+        <a href={BUSINESS.contact.whatsappUrl} target="_blank" rel="noreferrer">
+          WhatsApp: {BUSINESS.contact.whatsappDisplay}
         </a>
-        <a href="https://instagram.com/locotoons" target="_blank" rel="noreferrer">
-          Instagram: @locotoons
+        <a href={BUSINESS.contact.instagramUrl} target="_blank" rel="noreferrer">
+          Instagram: @{BUSINESS.contact.instagram}
         </a>
-        <a href="mailto:hola@locotoons.cl">Correo: hola@locotoons.cl</a>
+        <a href={`mailto:${BUSINESS.contact.email}`}>Correo: {BUSINESS.contact.email}</a>
       </div>
       <div className="footer-block">
         <strong>Tienda</strong>
-        <span>Novedades, reservas y productos destacados cada semana.</span>
-        <span>Compra online con carrito, pedidos y seguimiento de ordenes.</span>
+        <span>{SITE.footer.storeNote1}</span>
+        <span>{SITE.footer.storeNote2}</span>
       </div>
     </footer>
   );
@@ -1047,7 +1138,7 @@ function StorefrontSidebar({
   activeCategory?: Pick<Category, 'name' | 'slug' | 'description'> | null;
 }) {
   const auth = useAuth();
-  const featuredLabel = activeCategory ? getCategoryDisplayName(activeCategory) : 'Locotoons';
+  const featuredLabel = activeCategory ? getCategoryDisplayName(activeCategory) : SITE.name;
   const featuredDescription =
     ('id' in (activeCategory ?? {}) && activeCategory
       ? getCategoryDescription(activeCategory as Category)
@@ -1089,8 +1180,10 @@ function StorefrontSidebar({
         <ul className="promo-list">
           {menuCategories.slice(0, 7).map((category) => (
             <li key={category.slug} id={`category-${category.slug}`}>
-              <strong>{getCategoryDisplayName(category)}</strong>
-              <span>{'id' in category ? getCategoryDescription(category as Category) : category.description}</span>
+              <Link to={`/category/${category.slug}`}>
+                <strong>{getCategoryDisplayName(category)}</strong>
+                <span>{'id' in category ? getCategoryDescription(category as Category) : category.description}</span>
+              </Link>
             </li>
           ))}
         </ul>
@@ -1132,8 +1225,6 @@ function ProductCatalogSection({
   emptyDescription: string;
   emptyAction: ReactNode;
 }) {
-  const featuredProducts = products.slice(0, 6);
-
   return (
     <section className="catalog-panel" id="catalogo">
       <header className="section-heading">
@@ -1146,8 +1237,8 @@ function ProductCatalogSection({
 
       {!loading && !error && (
         <div className="product-grid">
-          {featuredProducts.length > 0 ? (
-            featuredProducts.map((product) => (
+          {products.length > 0 ? (
+            products.map((product) => (
               <Link
                 key={product.id}
                 to={`/products/${product.id}`}
@@ -1162,7 +1253,10 @@ function ProductCatalogSection({
                     )}
                   </div>
                   <div className="product-body">
-                    <span className="product-category">{getCategoryDisplayName(product.category)}</span>
+                    <div className="product-card-kickers">
+                      <span className="product-category">{getCategoryDisplayName(product.category)}</span>
+                      {product.featured && <span className="product-featured-pill">Destacado</span>}
+                    </div>
                     <h3>{product.title}</h3>
                     <p>{product.description}</p>
                     <div className="product-footer">
@@ -1201,7 +1295,7 @@ function HomePage() {
   const heroProducts = filteredProducts.slice(0, 3);
   const heroSlides = STORE_CATEGORY_PRESETS.slice(0, 6).map((preset) => {
     const matchedProduct = [...products]
-      .reverse()
+      .sort((left, right) => Number(right.featured === true) - Number(left.featured === true))
       .find((product) => {
         const category = product.category;
         return (
@@ -1331,14 +1425,18 @@ function HomePage() {
                 </div>
                 {heroProducts.length > 0 ? (
                   heroProducts.map((product, index) => (
-                    <article key={product.id} className={`hero-product hero-product-${index + 1}`}>
+                    <Link
+                      key={product.id}
+                      to={`/products/${product.id}`}
+                      className={`hero-product hero-product-${index + 1}`}
+                    >
                       <span className="hero-product-category">
                         {getCategoryDisplayName(product.category) ?? 'Seleccion destacada'}
                       </span>
                       <h2>{product.title}</h2>
                       <p>{product.description}</p>
                       <strong>{formatPrice(product.price)}</strong>
-                    </article>
+                    </Link>
                   ))
                 ) : (
                   <div className="hero-empty">
@@ -1353,14 +1451,14 @@ function HomePage() {
               title={
                 activeCategory
                   ? `Productos en ${getCategoryDisplayName(activeCategory)}`
-                  : 'Productos destacados'
+                  : 'Productos disponibles'
               }
               subtitle={
                 activeSearch
                   ? `${filteredProducts.length} resultado(s) para "${searchParams.get('q')}"`
                   : activeCategory
                     ? `${filteredProducts.length} producto(s) en esta categoria`
-                    : 'Explora los productos destacados de la tienda'
+                    : 'Explora los productos visibles de la tienda'
               }
               products={filteredProducts}
               loading={loading}
@@ -1483,8 +1581,8 @@ function CategoryPage() {
                       </span>
                       <h1>
                         {activeCategory
-                          ? `${getCategoryDisplayName(activeCategory)} en Locotoons`
-                          : 'Categoria en Locotoons'}
+                          ? `${getCategoryDisplayName(activeCategory)} en ${SITE.name}`
+                          : `Categoria en ${SITE.name}`}
                       </h1>
                       <p>
                         {activeCategory?.description ??
@@ -1509,7 +1607,7 @@ function CategoryPage() {
                         ) : (
                           <div className="hero-carousel-placeholder">
                             <span>
-                              {activeCategory ? getCategoryDisplayName(activeCategory) : 'Locotoons'}
+                              {activeCategory ? getCategoryDisplayName(activeCategory) : SITE.name}
                             </span>
                           </div>
                         )}
@@ -1517,7 +1615,7 @@ function CategoryPage() {
                       <div className="hero-carousel-info">
                         <strong>
                           {leadProduct?.title ??
-                            `Coleccion de ${activeCategory ? getCategoryDisplayName(activeCategory) : 'Locotoons'}`}
+                            `Coleccion de ${activeCategory ? getCategoryDisplayName(activeCategory) : SITE.name}`}
                         </strong>
                         <p>
                           {leadProduct?.description ??
@@ -1543,14 +1641,18 @@ function CategoryPage() {
                   </div>
                   {featuredProducts.length > 0 ? (
                     featuredProducts.map((product, index) => (
-                      <article key={product.id} className={`hero-product hero-product-${index + 1}`}>
+                      <Link
+                        key={product.id}
+                        to={`/products/${product.id}`}
+                        className={`hero-product hero-product-${index + 1}`}
+                      >
                         <span className="hero-product-category">
                           {getCategoryDisplayName(product.category)}
                         </span>
                         <h2>{product.title}</h2>
                         <p>{product.description}</p>
                         <strong>{formatPrice(product.price)}</strong>
-                      </article>
+                      </Link>
                     ))
                   ) : (
                     <div className="hero-empty">
@@ -1653,7 +1755,7 @@ function LoginPage() {
         <section className="auth-layout">
           <article className="auth-panel auth-panel-copy">
             <span className="hero-tag">Acceso clientes</span>
-            <h1>Ingresa a tu cuenta Locotoons</h1>
+            <h1>Ingresa a tu cuenta {SITE.name}</h1>
             <p>
               Accede a tu cuenta para guardar productos, revisar tu carrito y seguir tus
               compras desde un solo lugar.
@@ -1783,7 +1885,7 @@ function RegisterPage() {
             <div className="login-card-header">
               <p className="brand-kicker">Registro</p>
               <h1>Crea tu cuenta</h1>
-              <p>Registrate para guardar tu carrito y comprar de forma mas rapida en Locotoons.</p>
+              <p>Registrate para guardar tu carrito y comprar de forma mas rapida en {SITE.name}.</p>
             </div>
 
             {error && <div className="message-box message-box-error">{error}</div>}
@@ -1846,6 +1948,8 @@ function CartPage() {
   const [guestName, setGuestName] = useState('');
   const [guestEmail, setGuestEmail] = useState('');
   const [guestPhone, setGuestPhone] = useState('');
+  const paymentMethod: PaymentMethod = BUSINESS.payment.method;
+  const [orderConfirmation, setOrderConfirmation] = useState<OrderConfirmation | null>(null);
   const isGuestMode = !auth.user;
 
   async function loadCart() {
@@ -1922,6 +2026,7 @@ function CartPage() {
       setBusyItemId(item.id);
       setError(null);
       setSuccess(null);
+      setOrderConfirmation(null);
 
       if (auth.user) {
         await api.patch(`/carts/${auth.user.userId}/items/${item.id}`, {
@@ -2017,7 +2122,7 @@ function CartPage() {
               )}`,
           )
           .join(', ')}. Total: ${formatPrice(subtotal)}`
-      : 'Hola, quiero comprar en Locotoons.';
+      : BUSINESS.whatsapp.emptyCartMessage;
 
   async function handleCheckout() {
     if (cartItems.length === 0) {
@@ -2038,12 +2143,19 @@ function CartPage() {
       setCheckoutLoading(true);
       setError(null);
       setSuccess(null);
+      setOrderConfirmation(null);
 
-      await api.post('/orders', {
+      const checkoutItems = cartItems.map((item) => ({
+        ...item,
+        product: { ...item.product },
+      }));
+
+      const orderResponse = await api.post<Order>('/orders', {
         customerName: isGuestMode ? guestName.trim() : undefined,
         customerEmail: isGuestMode ? guestEmail.trim() : undefined,
         customerPhone: guestPhone.trim() || undefined,
         shippingAddress,
+        paymentMethod,
         items: cartItems.map((item) => ({
           productId: item.product.id,
           quantity: item.quantity,
@@ -2069,6 +2181,13 @@ function CartPage() {
       persistProfileIfNeeded();
       await auth.refreshCartCount();
       notifyStorefrontRefresh();
+      setOrderConfirmation({
+        order: orderResponse.data,
+        items: checkoutItems,
+        customerName: isGuestMode ? guestName.trim() : auth.user?.email?.split('@')[0],
+        customerEmail: isGuestMode ? guestEmail.trim() : auth.user?.email,
+        customerPhone: guestPhone.trim() || undefined,
+      });
       setSuccess(
         auth.user
           ? 'Tu compra fue registrada correctamente. Ya puedes revisarla en Mis ordenes.'
@@ -2099,6 +2218,14 @@ function CartPage() {
     }
   }
 
+  const orderConfirmationWhatsAppMessage = orderConfirmation
+    ? buildOrderWhatsAppMessage(orderConfirmation.order, orderConfirmation.items, {
+        name: orderConfirmation.customerName,
+        email: orderConfirmation.customerEmail,
+        phone: orderConfirmation.customerPhone,
+      })
+    : null;
+
   return (
     <div className="store-shell">
       <div className="top-strip" />
@@ -2120,14 +2247,16 @@ function CartPage() {
               <div className="cart-guest-banner">
                 <div>
                   <strong>Checkout rapido</strong>
-                  <p>Puedes terminar tu compra ahora mismo o iniciar sesion para guardar tu historial.</p>
+                  <p>Compra como invitado o inicia sesion para guardar tu historial.</p>
                 </div>
-                <div className="empty-state-actions">
-                  <Link to="/login" className="product-detail-secondary-link">
-                    Iniciar sesion
+                <div className="checkout-account-actions">
+                  <Link to="/login" className="checkout-account-card">
+                    <strong>Iniciar sesion</strong>
+                    <span>Guarda historial y datos de envio.</span>
                   </Link>
-                  <Link to="/register" className="product-detail-secondary-link">
-                    Crear cuenta
+                  <Link to="/register" className="checkout-account-card">
+                    <strong>Crear cuenta</strong>
+                    <span>Registra tus datos para futuras compras.</span>
                   </Link>
                 </div>
               </div>
@@ -2135,9 +2264,43 @@ function CartPage() {
 
             {error && <div className="message-box message-box-error">{error}</div>}
             {success && <div className="message-box auth-success-box">{success}</div>}
+            {orderConfirmation && orderConfirmationWhatsAppMessage && (
+              <section className="order-confirmation-card">
+                <span className="promo-ribbon">Pendiente de confirmacion de pago</span>
+                <h3>Orden #{orderConfirmation.order.id}</h3>
+                <div className="order-confirmation-grid">
+                  <div>
+                    <span className="order-label">Estado</span>
+                    <p>Pendiente de confirmacion de pago</p>
+                  </div>
+                  <div>
+                    <span className="order-label">Metodo</span>
+                    <p>{getPaymentMethodLabel(orderConfirmation.order.paymentMethod)}</p>
+                  </div>
+                </div>
+                <div className="summary-line summary-line-total">
+                  <span>Total</span>
+                  <strong>{formatPrice(orderConfirmation.order.total)}</strong>
+                </div>
+                <div className="transfer-instructions">
+                  <strong>Instrucciones para transferencia</strong>
+                  <span>Transfiere el total exacto de la orden.</span>
+                  <span>En el comentario o asunto escribe: Orden #{orderConfirmation.order.id}.</span>
+                  <span>Luego envia el comprobante por WhatsApp para confirmar la preparacion del pedido.</span>
+                </div>
+                <a
+                  href={buildWhatsAppUrl(orderConfirmationWhatsAppMessage)}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="whatsapp-button"
+                >
+                  Enviar comprobante por WhatsApp
+                </a>
+              </section>
+            )}
             {loading && <LoadingState message="Cargando tu carrito..." />}
 
-            {!loading && cartItems.length === 0 && (
+            {!loading && cartItems.length === 0 && !orderConfirmation && (
               <EmptyState
                 compact
                 tag="Sin productos"
@@ -2161,7 +2324,7 @@ function CartPage() {
                   <span>Producto</span>
                   <span>Cantidad</span>
                   <span>Precio</span>
-                  <span>Total</span>
+                  <span>Subtotal</span>
                 </div>
 
                 <div className="cart-table-body">
@@ -2212,6 +2375,11 @@ function CartPage() {
                       </div>
                     </article>
                   ))}
+                </div>
+
+                <div className="cart-table-total">
+                  <span>Total del pedido</span>
+                  <strong>{formatPrice(subtotal)}</strong>
                 </div>
               </div>
             )}
@@ -2268,7 +2436,22 @@ function CartPage() {
                 className="cart-summary-textarea"
                 value={shippingAddress}
                 onChange={(event) => setShippingAddress(event.target.value)}
+                aria-describedby="shipping-address-help"
               />
+              <p className="cart-summary-help" id="shipping-address-help">
+                Ingresa calle, numero, comuna y region.
+              </p>
+
+              <div className="payment-method-panel">
+                <span className="cart-summary-label">Metodo de pago</span>
+                <div className="payment-method-option payment-method-option-static">
+                  <span className="payment-method-dot" aria-hidden="true" />
+                  <span>
+                    <strong>Transferencia bancaria</strong>
+                    <small>La orden queda pendiente hasta confirmar el comprobante por WhatsApp.</small>
+                  </span>
+                </div>
+              </div>
 
               {!isGuestMode && (
                 <div className="cart-inline-actions">
@@ -2310,9 +2493,9 @@ function CartPage() {
                 href={buildWhatsAppUrl(whatsappMessage)}
                 target="_blank"
                 rel="noreferrer"
-                className="whatsapp-button"
+                className="whatsapp-button whatsapp-button-secondary"
               >
-                Comprar por WhatsApp
+                Consultar por WhatsApp
               </a>
               <Link to="/" className="product-detail-secondary-link">
                 Seguir comprando
@@ -2401,7 +2584,7 @@ function AccountPage({ initialSection = 'profile' }: { initialSection?: 'profile
           <aside className="account-sidebar">
             <div className="account-sidebar-card">
               <span className="hero-tag">Mi cuenta</span>
-              <h2>{auth.user?.email ?? 'Cliente Locotoons'}</h2>
+              <h2>{auth.user?.email ?? `Cliente ${SITE.name}`}</h2>
               <p>Desde aqui puedes revisar tus datos guardados y el historial de compras.</p>
               <div className="account-sidebar-actions">
                 <button
@@ -2497,7 +2680,7 @@ function AccountPage({ initialSection = 'profile' }: { initialSection?: 'profile
               <section className="orders-layout">
                 <header className="section-heading">
                   <h2>Mis ordenes</h2>
-                  <span>Historial real de tus compras en Locotoons</span>
+                  <span>Historial real de tus compras en {SITE.name}</span>
                 </header>
 
                 {loading && <LoadingState message="Cargando tus ordenes..." />}
@@ -2524,7 +2707,7 @@ function AccountPage({ initialSection = 'profile' }: { initialSection?: 'profile
                         <div className="order-card-header">
                           <div>
                             <span className="order-label">Orden #{order.id}</span>
-                            <h3>{new Date(order.createdAt).toLocaleDateString('es-CL')}</h3>
+                            <h3>{new Date(order.createdAt).toLocaleDateString(BUSINESS.locale)}</h3>
                           </div>
                           <div className="order-summary-meta">
                             <span className="order-status">{order.status}</span>
@@ -2642,7 +2825,7 @@ function OrderDetailPage() {
               <div className="order-card-header">
                 <div>
                   <span className="order-label">Orden #{order.id}</span>
-                  <h3>{new Date(order.createdAt).toLocaleDateString('es-CL')}</h3>
+                  <h3>{new Date(order.createdAt).toLocaleDateString(BUSINESS.locale)}</h3>
                 </div>
                 <div className="order-summary-meta">
                   <span className="order-status">{order.status}</span>
@@ -2653,7 +2836,7 @@ function OrderDetailPage() {
               <div className="order-meta-grid">
                 <div>
                   <span className="order-label">Fecha</span>
-                  <p>{new Date(order.createdAt).toLocaleString('es-CL')}</p>
+                  <p>{new Date(order.createdAt).toLocaleString(BUSINESS.locale)}</p>
                 </div>
                 <div>
                   <span className="order-label">Estado</span>
@@ -2695,6 +2878,7 @@ function AdminDashboard() {
   const [orders, setOrders] = useState<Order[]>([]);
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
   const [productForm, setProductForm] = useState<ProductFormState>(createEmptyProductForm());
+  const [categoriesLoading, setCategoriesLoading] = useState(true);
   const [productsLoading, setProductsLoading] = useState(true);
   const [ordersLoading, setOrdersLoading] = useState(true);
   const [productSubmitting, setProductSubmitting] = useState(false);
@@ -2702,25 +2886,47 @@ function AdminDashboard() {
   const [orderBusyId, setOrderBusyId] = useState<number | null>(null);
   const [productMessage, setProductMessage] = useState<string | null>(null);
   const [orderMessage, setOrderMessage] = useState<string | null>(null);
+  const [categoryError, setCategoryError] = useState<string | null>(null);
   const [productError, setProductError] = useState<string | null>(null);
   const [orderError, setOrderError] = useState<string | null>(null);
   const [productSearch, setProductSearch] = useState('');
   const [productCategoryFilter, setProductCategoryFilter] = useState('all');
   const [productVisibilityFilter, setProductVisibilityFilter] = useState<'all' | 'visible' | 'hidden'>('all');
   const [productStockFilter, setProductStockFilter] = useState<'all' | 'low' | 'out'>('all');
+  const [productFeaturedFilter, setProductFeaturedFilter] = useState<'all' | 'featured' | 'normal'>('all');
+  const [productSortOption, setProductSortOption] = useState<ProductSortOption>('newest');
   const [groupProductsByCategory, setGroupProductsByCategory] = useState(true);
+  const [productImagePreviewFailed, setProductImagePreviewFailed] = useState(false);
+
+  async function loadAdminCategories() {
+    try {
+      setCategoriesLoading(true);
+      setCategoryError(null);
+
+      const response = await api.get<Category[]>('/categories');
+      setCategories(sortStoreCategories(response.data));
+    } catch (requestError) {
+      setCategories([]);
+
+      if (axios.isAxiosError(requestError)) {
+        setCategoryError(
+          (requestError.response?.data as { message?: string } | undefined)?.message ??
+            'No pudimos cargar las categorias para el formulario de producto.',
+        );
+      } else {
+        setCategoryError('No pudimos cargar las categorias para el formulario de producto.');
+      }
+    } finally {
+      setCategoriesLoading(false);
+    }
+  }
 
   async function loadAdminProducts() {
     try {
       setProductsLoading(true);
       setProductError(null);
 
-      const [categoriesResponse, productsResponse] = await Promise.all([
-        api.get<Category[]>('/categories'),
-        api.get<AdminProduct[]>('/products/admin/all'),
-      ]);
-
-      setCategories(sortStoreCategories(categoriesResponse.data));
+      const productsResponse = await api.get<AdminProduct[]>('/products/admin/all');
       setProducts(productsResponse.data.map((product) => normalizeProduct(product) as AdminProduct));
     } catch (requestError) {
       if (axios.isAxiosError(requestError)) {
@@ -2764,12 +2970,14 @@ function AdminDashboard() {
   }
 
   useEffect(() => {
+    void loadAdminCategories();
     void loadAdminProducts();
     void loadAdminOrders(false);
   }, []);
 
   const visibleProducts = products.filter((product) => product.isVisible !== false);
   const hiddenProducts = products.filter((product) => product.isVisible === false);
+  const featuredProducts = visibleProducts.filter((product) => product.featured === true);
   const lowStockProducts = visibleProducts.filter(
     (product) => product.stock > 0 && product.stock <= 5,
   );
@@ -2777,7 +2985,17 @@ function AdminDashboard() {
   const normalizedProductSearch = normalizeCategoryValue(productSearch);
   const filteredProducts = products.filter((product) => {
     const matchesSearch = normalizedProductSearch
-      ? [product.title, product.slug, product.description]
+      ? [
+          product.title,
+          product.slug,
+          product.description,
+          product.category?.name ?? '',
+          product.category?.slug ?? '',
+          ...(product.specifications ?? []).flatMap((specification) => [
+            specification.label,
+            specification.value,
+          ]),
+        ]
           .join(' ')
           .toLowerCase()
           .includes(normalizedProductSearch)
@@ -2798,19 +3016,61 @@ function AdminDashboard() {
         : productStockFilter === 'low'
           ? product.stock > 0 && product.stock <= 5
           : product.stock <= 0;
+    const matchesFeatured =
+      productFeaturedFilter === 'all'
+        ? true
+        : productFeaturedFilter === 'featured'
+          ? product.featured === true
+          : product.featured !== true;
 
-    return matchesSearch && matchesCategory && matchesVisibility && matchesStock;
+    return matchesSearch && matchesCategory && matchesVisibility && matchesStock && matchesFeatured;
+  });
+  const orderedFilteredProducts = [...filteredProducts].sort((left, right) => {
+    if (productSortOption === 'newest' || productSortOption === 'oldest') {
+      const leftTime = new Date(left.createdAt ?? '').getTime() || 0;
+      const rightTime = new Date(right.createdAt ?? '').getTime() || 0;
+      return productSortOption === 'newest' ? rightTime - leftTime : leftTime - rightTime;
+    }
+
+    if (productSortOption === 'price_desc') {
+      return Number(right.price) - Number(left.price);
+    }
+
+    if (productSortOption === 'price_asc') {
+      return Number(left.price) - Number(right.price);
+    }
+
+    if (productSortOption === 'low_stock') {
+      return left.stock - right.stock;
+    }
+
+    const leftCategory = getCategoryDisplayName(left.category);
+    const rightCategory = getCategoryDisplayName(right.category);
+    const categoryComparison = leftCategory.localeCompare(rightCategory, 'es');
+
+    if (categoryComparison !== 0) {
+      return categoryComparison;
+    }
+
+    return left.title.localeCompare(right.title, 'es');
   });
   const groupedProducts = categories
     .map((category) => ({
       category,
-      products: filteredProducts.filter((product) => product.category?.id === category.id),
+      products: orderedFilteredProducts.filter((product) => product.category?.id === category.id),
     }))
     .filter((group) => group.products.length > 0);
-  const uncategorizedProducts = filteredProducts.filter((product) => !product.category?.id);
+  const uncategorizedProducts = orderedFilteredProducts.filter((product) => !product.category?.id);
+  const selectedProductCategory = categories.find(
+    (category) => String(category.id) === productForm.categoryId,
+  );
+  const isDirectImageUrl = /\.(jpe?g|png|webp)(\?.*)?$/i.test(productForm.imageUrl.trim());
+  const productFormStock = Number(productForm.stock);
+  const productFormStockBadge = getStockBadge(Number.isNaN(productFormStock) ? 0 : productFormStock);
 
   function resetProductForm() {
     setProductForm(createEmptyProductForm());
+    setProductImagePreviewFailed(false);
   }
 
   function openCreateProductForm() {
@@ -2837,6 +3097,17 @@ function AdminDashboard() {
         };
       }
 
+      if (key === 'slug') {
+        return {
+          ...current,
+          slug: buildSlug(String(value)),
+        };
+      }
+
+      if (key === 'imageUrl') {
+        setProductImagePreviewFailed(false);
+      }
+
       return {
         ...current,
         [key]: value,
@@ -2844,9 +3115,49 @@ function AdminDashboard() {
     });
   }
 
+  function handleSpecificationChange(
+    index: number,
+    key: keyof ProductSpecificationFormState,
+    value: string,
+  ) {
+    setProductForm((current) => ({
+      ...current,
+      specifications: current.specifications.map((specification, specificationIndex) =>
+        specificationIndex === index
+          ? {
+              ...specification,
+              [key]: value,
+            }
+          : specification,
+      ),
+    }));
+  }
+
+  function addSpecificationRow() {
+    setProductForm((current) => ({
+      ...current,
+      specifications: [...current.specifications, { label: '', value: '' }],
+    }));
+  }
+
+  function removeSpecificationRow(index: number) {
+    setProductForm((current) => {
+      const nextSpecifications = current.specifications.filter(
+        (_, specificationIndex) => specificationIndex !== index,
+      );
+
+      return {
+        ...current,
+        specifications:
+          nextSpecifications.length > 0 ? nextSpecifications : [{ label: '', value: '' }],
+      };
+    });
+  }
+
   function startEditingProduct(product: AdminProduct) {
     setProductMessage(null);
     setProductError(null);
+    setProductImagePreviewFailed(false);
     setProductForm({
       id: product.id,
       title: product.title,
@@ -2857,7 +3168,8 @@ function AdminDashboard() {
       imageUrl: product.imageUrl ?? '',
       categoryId: product.category?.id ? String(product.category.id) : '',
       isVisible: product.isVisible !== false,
-      specificationsText: formatSpecificationsInput(product.specifications),
+      featured: product.featured === true,
+      specifications: createSpecificationRows(product.specifications),
     });
     setActiveSection('products');
     window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -2866,41 +3178,62 @@ function AdminDashboard() {
   async function handleProductSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
-    let specifications: Array<{ label: string; value: string }> = [];
-
-    try {
-      specifications = parseSpecificationsInput(productForm.specificationsText);
-    } catch (parseError) {
-      setProductError(
-        parseError instanceof Error
-          ? parseError.message
-          : 'No pudimos interpretar las especificaciones del producto.',
-      );
-      setProductMessage(null);
-      return;
-    }
+    const specifications = normalizeSpecificationsInput(productForm.specifications);
+    const hasIncompleteSpecification = specifications.some(
+      (specification) => !specification.label || !specification.value,
+    );
 
     const payload = {
       title: productForm.title.trim(),
-      slug: productForm.slug.trim() || buildSlug(productForm.title),
+      slug: buildSlug(productForm.slug || productForm.title),
       description: productForm.description.trim(),
       price: Number(productForm.price),
       stock: Number(productForm.stock),
       imageUrl: productForm.imageUrl.trim() || undefined,
       categoryId: Number(productForm.categoryId),
       isVisible: productForm.isVisible,
+      featured: productForm.featured,
       specifications,
     };
 
-    if (
-      !payload.title ||
-      !payload.slug ||
-      !payload.description ||
-      !productForm.categoryId ||
-      Number.isNaN(payload.price) ||
-      Number.isNaN(payload.stock)
-    ) {
-      setProductError('Completa titulo, slug, descripcion, categoria, precio y stock.');
+    if (!payload.title) {
+      setProductError('Agrega un titulo para el producto.');
+      setProductMessage(null);
+      return;
+    }
+
+    if (!payload.slug) {
+      setProductError('El slug no puede quedar vacio. Escribe un titulo o ajusta el slug manualmente.');
+      setProductMessage(null);
+      return;
+    }
+
+    if (!payload.description) {
+      setProductError('Agrega una descripcion breve para el producto.');
+      setProductMessage(null);
+      return;
+    }
+
+    if (!productForm.categoryId) {
+      setProductError('Selecciona una categoria para ubicar el producto en la tienda.');
+      setProductMessage(null);
+      return;
+    }
+
+    if (Number.isNaN(payload.price) || payload.price < 0 || !Number.isInteger(payload.price)) {
+      setProductError('Ingresa un precio CLP valido, sin decimales y mayor o igual a 0.');
+      setProductMessage(null);
+      return;
+    }
+
+    if (Number.isNaN(payload.stock) || payload.stock < 0 || !Number.isInteger(payload.stock)) {
+      setProductError('Ingresa un stock valido en unidades completas.');
+      setProductMessage(null);
+      return;
+    }
+
+    if (hasIncompleteSpecification) {
+      setProductError('Completa etiqueta y valor en cada specification, o elimina la fila vacia.');
       setProductMessage(null);
       return;
     }
@@ -2973,6 +3306,80 @@ function AdminDashboard() {
     }
   }
 
+  async function handleToggleFeatured(product: AdminProduct) {
+    try {
+      setProductBusyId(product.id);
+      setProductError(null);
+      setProductMessage(null);
+      await api.patch(`/products/${product.id}`, {
+        featured: product.featured !== true,
+      });
+      setProductMessage(
+        product.featured === true
+          ? 'Producto quitado de destacados.'
+          : 'Producto marcado como destacado.',
+      );
+      await loadAdminProducts();
+      notifyStorefrontRefresh();
+    } catch (requestError) {
+      if (axios.isAxiosError(requestError)) {
+        setProductError(
+          (requestError.response?.data as { message?: string } | undefined)?.message ??
+            'No pudimos actualizar el destacado del producto.',
+        );
+      } else {
+        setProductError('No pudimos actualizar el destacado del producto.');
+      }
+    } finally {
+      setProductBusyId(null);
+    }
+  }
+
+  async function handleCleanDemoProducts() {
+    const confirmed = window.confirm(
+      'Vas a ocultar productos demo o no reales para empezar con catalogo limpio. No se borraran ordenes historicas ni productos de ordenes/carritos. Deseas continuar?',
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    try {
+      setProductSubmitting(true);
+      setProductError(null);
+      setProductMessage(null);
+
+      const response = await api.post<{
+        summary: {
+          hidden: Array<{ id: number }>;
+          deleted?: Array<{ id: number }>;
+          kept?: Array<{ id: number }>;
+        };
+      }>('/products/clean-test-data');
+      const hiddenCount = response.data.summary.hidden.length;
+      const deletedCount = response.data.summary.deleted?.length ?? 0;
+      const keptCount = response.data.summary.kept?.length ?? 0;
+
+      setProductMessage(
+        `Limpieza demo completada: ${hiddenCount} ocultado(s), ${deletedCount} eliminado(s), ${keptCount} omitido(s). Las ordenes historicas se mantienen.`,
+      );
+      await loadAdminProducts();
+      notifyStorefrontRefresh();
+      setActiveSection('products');
+    } catch (requestError) {
+      if (axios.isAxiosError(requestError)) {
+        setProductError(
+          (requestError.response?.data as { message?: string } | undefined)?.message ??
+            'No pudimos limpiar los productos demo.',
+        );
+      } else {
+        setProductError('No pudimos limpiar los productos demo.');
+      }
+    } finally {
+      setProductSubmitting(false);
+    }
+  }
+
   async function handleDeleteProduct(product: AdminProduct) {
     const confirmed = window.confirm(
       `Vas a intentar eliminar "${product.title}". Si tiene carritos u ordenes asociadas, se ocultara en lugar de borrarse. Deseas continuar?`,
@@ -2986,8 +3393,17 @@ function AdminDashboard() {
       setProductBusyId(product.id);
       setProductError(null);
       setProductMessage(null);
-      await api.delete(`/products/${product.id}`);
-      setProductMessage('Producto eliminado correctamente del catalogo admin.');
+      const response = await api.delete<{
+        deleted: boolean;
+        hidden?: boolean;
+        message?: string;
+      }>(`/products/${product.id}`);
+      setProductMessage(
+        response.data.hidden
+          ? response.data.message ??
+              'El producto tenia relaciones y fue ocultado del catalogo publico.'
+          : 'Producto eliminado correctamente del catalogo admin.',
+      );
       await loadAdminProducts();
       notifyStorefrontRefresh();
     } catch (requestError) {
@@ -3024,6 +3440,11 @@ function AdminDashboard() {
   }
 
   async function handleSelectOrder(orderId: number) {
+    if (selectedOrder?.id === orderId) {
+      setSelectedOrder(null);
+      return;
+    }
+
     try {
       setOrderBusyId(orderId);
       setOrderError(null);
@@ -3074,6 +3495,7 @@ function AdminDashboard() {
 
   function renderProductRow(product: AdminProduct) {
     const categoryName = getCategoryDisplayName(product.category);
+    const stockBadge = getStockBadge(product.stock);
 
     return (
       <article key={product.id} className="admin-product-row">
@@ -3101,12 +3523,19 @@ function AdminDashboard() {
             </span>
           )}
         </div>
-        <div className="admin-product-meta-cell">{categoryName}</div>
-        <div className="admin-product-meta-cell admin-product-meta-cell-strong">
-          {formatPrice(product.price)}
+        <div className="admin-product-meta-cell admin-product-info-stack" data-label="Datos">
+          <span className="admin-category-pill">{categoryName}</span>
+          <strong>{formatPrice(product.price)}</strong>
+          <span className={stockBadge.className}>{product.stock} | {stockBadge.label}</span>
         </div>
-        <div className="admin-product-meta-cell">{product.stock}</div>
-        <div className="admin-product-meta-cell">
+        <div className="admin-product-meta-cell admin-product-status-stack" data-label="Estados">
+          {product.featured ? (
+            <span className="admin-featured-badge">Destacado</span>
+          ) : (
+            <span className="admin-muted-badge">Normal</span>
+          )}
+        </div>
+        <div className="admin-product-meta-cell" data-label="Estado">
           <span
             className={
               product.isVisible
@@ -3117,10 +3546,10 @@ function AdminDashboard() {
             {product.isVisible ? 'Visible' : 'Oculto'}
           </span>
         </div>
-        <div className="admin-product-actions">
+        <div className="admin-product-actions" data-label="Acciones">
           <button
             type="button"
-            className="product-detail-secondary-button"
+            className="product-detail-secondary-button admin-product-action-button"
             onClick={() => startEditingProduct(product)}
             disabled={productBusyId === product.id}
           >
@@ -3128,7 +3557,7 @@ function AdminDashboard() {
           </button>
           <button
             type="button"
-            className="product-detail-secondary-button"
+            className="product-detail-secondary-button admin-product-action-button"
             onClick={() => void handleToggleVisibility(product)}
             disabled={productBusyId === product.id}
           >
@@ -3136,7 +3565,15 @@ function AdminDashboard() {
           </button>
           <button
             type="button"
-            className="product-detail-secondary-button admin-danger-button"
+            className="product-detail-secondary-button admin-product-action-button"
+            onClick={() => void handleToggleFeatured(product)}
+            disabled={productBusyId === product.id}
+          >
+            {product.featured ? 'Quitar destacado' : 'Destacar'}
+          </button>
+          <button
+            type="button"
+            className="product-detail-secondary-button admin-product-action-button admin-danger-button"
             onClick={() => void handleDeleteProduct(product)}
             disabled={productBusyId === product.id}
           >
@@ -3157,7 +3594,7 @@ function AdminDashboard() {
           <aside className="account-sidebar">
             <div className="account-sidebar-card admin-sidebar-card">
               <span className="hero-tag">Admin</span>
-              <h2>Panel Locotoons</h2>
+              <h2>Panel {SITE.name}</h2>
               <p>
                 Gestiona productos, visibilidad del catalogo y estados de orden sin salir del
                 sitio.
@@ -3199,7 +3636,7 @@ function AdminDashboard() {
               <section className="orders-layout">
                 <header className="section-heading">
                   <h2>Resumen de la tienda</h2>
-                  <span>Vista general del catalogo y del flujo comercial actual de Locotoons.</span>
+                  <span>Vista general del catalogo y del flujo comercial actual de {SITE.name}.</span>
                 </header>
 
                 <div className="admin-summary-grid">
@@ -3227,6 +3664,11 @@ function AdminDashboard() {
                     <span className="order-label">Stock bajo</span>
                     <strong>{lowStockProducts.length}</strong>
                     <p>Productos visibles con stock entre 1 y 5 unidades.</p>
+                  </article>
+                  <article className="admin-summary-card">
+                    <span className="order-label">Destacados</span>
+                    <strong>{featuredProducts.length}</strong>
+                    <p>Productos visibles priorizados en la home.</p>
                   </article>
                 </div>
 
@@ -3261,6 +3703,17 @@ function AdminDashboard() {
                       >
                         Ver catalogo admin
                       </button>
+                      <button
+                        type="button"
+                        className="product-detail-secondary-button admin-danger-button"
+                        onClick={() => void handleCleanDemoProducts()}
+                        disabled={productSubmitting}
+                      >
+                        Ocultar productos demo
+                      </button>
+                      <p className="admin-cleanup-note">
+                        Oculta productos de prueba o no reales detectados de forma conservadora. No borra ordenes historicas ni elimina productos asociados a carritos u ordenes.
+                      </p>
                     </div>
                   </section>
 
@@ -3307,21 +3760,312 @@ function AdminDashboard() {
                 </header>
 
                 {productError && <div className="message-box message-box-error">{productError}</div>}
+                {categoryError && <div className="message-box message-box-error">{categoryError}</div>}
                 {productMessage && <div className="message-box auth-success-box">{productMessage}</div>}
 
-                <div className="admin-toolbar">
-                  <button
-                    type="button"
-                    className="product-detail-button"
-                    onClick={openCreateProductForm}
-                  >
-                    Crear producto
-                  </button>
-                  <span className="admin-toolbar-note">
-                    Total: {products.length} | Visibles: {visibleProducts.length} | Ocultos:{' '}
-                    {hiddenProducts.length}
-                  </span>
-                </div>
+                <section className="admin-panel-card">
+                  <div className="admin-panel-card-header">
+                    <div>
+                      <span className="order-label">
+                        {productForm.id ? 'Edicion de producto' : 'Nuevo producto'}
+                      </span>
+                      <h3>{productForm.id ? `Producto #${productForm.id}` : 'Crear producto'}</h3>
+                    </div>
+                    {productForm.id && (
+                      <button
+                        type="button"
+                        className="product-detail-secondary-button"
+                        onClick={resetProductForm}
+                      >
+                        Cancelar edicion
+                      </button>
+                    )}
+                  </div>
+
+                  <form className="admin-product-form" onSubmit={handleProductSubmit}>
+                    <details className="admin-product-guide">
+                      <summary>
+                        <span className="order-label">Guia rapida</span>
+                        <strong>Carga productos reales con datos listos para vender</strong>
+                      </summary>
+                      <div className="admin-guide-grid">
+                        <span>Titulo: nombre comercial claro</span>
+                        <span>Slug: URL corta sin espacios</span>
+                        <span>Descripcion: condicion, version y contenido</span>
+                        <span>Precio: valor final publicado</span>
+                        <span>Stock: unidades disponibles</span>
+                        <span>ImageUrl: imagen publica del producto</span>
+                        <span>Categoria: donde aparecera en la tienda</span>
+                        <span>Specifications: material, altura, serie, escala</span>
+                        <span>Destacado: prioridad en la home</span>
+                      </div>
+                    </details>
+
+                    <div className="admin-form-section-title">
+                      <strong>Informacion basica</strong>
+                      <span>Usa nombres claros y deja que el slug se genere desde el titulo.</span>
+                    </div>
+
+                    <label className="cart-summary-label" htmlFor="admin-product-title">
+                      Titulo
+                    </label>
+                    <input
+                      id="admin-product-title"
+                      className="cart-summary-input"
+                      type="text"
+                      value={productForm.title}
+                      onChange={(event) => handleProductFormChange('title', event.target.value)}
+                      placeholder="Ej: Figura Goku Super Saiyan"
+                    />
+
+                    <label className="cart-summary-label" htmlFor="admin-product-slug">
+                      Slug
+                    </label>
+                    <input
+                      id="admin-product-slug"
+                      className="cart-summary-input"
+                      type="text"
+                      value={productForm.slug}
+                      onChange={(event) => handleProductFormChange('slug', event.target.value)}
+                      placeholder="figura-goku-super-saiyan"
+                    />
+                    <p className="admin-field-help">
+                      Solo letras, numeros y guiones. Puedes editarlo manualmente si necesitas una URL especifica.
+                    </p>
+
+                    <label className="cart-summary-label" htmlFor="admin-product-category">
+                      Categoria
+                    </label>
+                    <select
+                      id="admin-product-category"
+                      className="cart-summary-input"
+                      value={productForm.categoryId}
+                      onChange={(event) =>
+                        handleProductFormChange('categoryId', event.target.value)
+                      }
+                    >
+                      <option value="">
+                        {categoriesLoading
+                          ? 'Cargando categorias...'
+                          : 'Selecciona la categoria del producto'}
+                      </option>
+                      {categories.map((category) => (
+                        <option key={category.id} value={category.id}>
+                          {getCategoryDisplayName(category)}
+                        </option>
+                      ))}
+                    </select>
+                    <div className="admin-current-category">
+                      <span className="order-label">Categoria actual</span>
+                      <span className="admin-category-pill">
+                        {selectedProductCategory
+                          ? getCategoryDisplayName(selectedProductCategory)
+                          : 'Sin categoria seleccionada'}
+                      </span>
+                    </div>
+
+                    <div className="admin-form-section-title">
+                      <strong>Precio e inventario</strong>
+                      <span>Estos datos se ven en el catalogo publico y controlan el checkout.</span>
+                    </div>
+
+                    <label className="cart-summary-label" htmlFor="admin-product-price">
+                      Precio
+                    </label>
+                    <input
+                      id="admin-product-price"
+                      className="cart-summary-input"
+                      type="number"
+                      min="0"
+                      step="1"
+                      inputMode="numeric"
+                      value={productForm.price}
+                      onChange={(event) => handleProductFormChange('price', event.target.value)}
+                      placeholder="Ej: 24990"
+                    />
+                    <p className="admin-field-help">
+                      Precio en pesos chilenos, sin puntos ni decimales. Ej: 24990.
+                    </p>
+
+                    <label className="cart-summary-label" htmlFor="admin-product-stock">
+                      Stock
+                    </label>
+                    <input
+                      id="admin-product-stock"
+                      className="cart-summary-input"
+                      type="number"
+                      min="0"
+                      step="1"
+                      inputMode="numeric"
+                      value={productForm.stock}
+                      onChange={(event) => handleProductFormChange('stock', event.target.value)}
+                      placeholder="Ej: 6"
+                    />
+                    <div className="admin-stock-preview">
+                      <span className={productFormStockBadge.className}>
+                        {productForm.stock.trim() ? productFormStockBadge.label : 'Stock pendiente'}
+                      </span>
+                    </div>
+
+                    <div className="admin-form-section-title">
+                      <strong>Imagen y descripcion</strong>
+                      <span>Pega una imageUrl publica y confirma el resultado en el preview.</span>
+                    </div>
+
+                    <label className="cart-summary-label" htmlFor="admin-product-image">
+                      Image URL
+                    </label>
+                    <input
+                      id="admin-product-image"
+                      className="cart-summary-input"
+                      type="url"
+                      value={productForm.imageUrl}
+                      onChange={(event) => handleProductFormChange('imageUrl', event.target.value)}
+                      placeholder="https://sitio.com/productos/figura.jpg"
+                    />
+                    <p className="admin-field-help">
+                      Usa una URL directa a imagen .jpg, .png o .webp. Si la URL falla, el preview mostrara un aviso y el producto seguira guardable.
+                    </p>
+                    {productForm.imageUrl.trim() && !isDirectImageUrl && (
+                      <div className="message-box message-box-error">
+                        La URL no parece terminar en .jpg, .png o .webp. Puedes guardar igual, pero podria mostrarse un placeholder.
+                      </div>
+                    )}
+                    {productImagePreviewFailed && (
+                      <div className="message-box message-box-error">
+                        No pudimos cargar esa imagen. Puedes guardar igual, pero se mostrara un placeholder hasta usar una URL directa valida.
+                      </div>
+                    )}
+                    <p className="admin-field-help">
+                      Futuro upload: este campo queda preparado para reemplazarse por subida real de archivos mas adelante.
+                    </p>
+
+                    <label className="cart-summary-label" htmlFor="admin-product-description">
+                      Descripcion
+                    </label>
+                    <textarea
+                      id="admin-product-description"
+                      className="cart-summary-textarea"
+                      value={productForm.description}
+                      onChange={(event) =>
+                        handleProductFormChange('description', event.target.value)
+                      }
+                      placeholder="Describe condicion, contenido de la caja, version o detalles importantes."
+                    />
+
+                    <div className="admin-form-section-title">
+                      <strong>Specifications</strong>
+                      <span>Agrega datos comparables como material, altura, serie o escala.</span>
+                    </div>
+
+                    <div className="admin-specifications-editor">
+                      {productForm.specifications.map((specification, index) => (
+                        <div key={`specification-${index}`} className="admin-specification-row">
+                          <input
+                            className="cart-summary-input"
+                            type="text"
+                            value={specification.label}
+                            onChange={(event) =>
+                              handleSpecificationChange(index, 'label', event.target.value)
+                            }
+                            placeholder={SPECIFICATION_LABEL_PLACEHOLDERS[index % SPECIFICATION_LABEL_PLACEHOLDERS.length]}
+                            aria-label={`Etiqueta specification ${index + 1}`}
+                          />
+                          <input
+                            className="cart-summary-input"
+                            type="text"
+                            value={specification.value}
+                            onChange={(event) =>
+                              handleSpecificationChange(index, 'value', event.target.value)
+                            }
+                            placeholder={index === 0 ? 'PVC' : index === 1 ? '18 cm' : 'Valor'}
+                            aria-label={`Valor specification ${index + 1}`}
+                          />
+                          <button
+                            type="button"
+                            className="product-detail-secondary-button admin-spec-remove-button"
+                            onClick={() => removeSpecificationRow(index)}
+                          >
+                            Eliminar
+                          </button>
+                        </div>
+                      ))}
+                      <button
+                        type="button"
+                        className="product-detail-secondary-button admin-spec-add-button"
+                        onClick={addSpecificationRow}
+                      >
+                        Agregar specification
+                      </button>
+                    </div>
+
+                    <label className="admin-checkbox-field" htmlFor="admin-product-visible">
+                      <input
+                        id="admin-product-visible"
+                        type="checkbox"
+                        checked={productForm.isVisible}
+                        onChange={(event) =>
+                          handleProductFormChange('isVisible', event.target.checked)
+                        }
+                      />
+                      <span>Producto visible en catalogo</span>
+                    </label>
+
+                    <label className="admin-checkbox-field" htmlFor="admin-product-featured">
+                      <input
+                        id="admin-product-featured"
+                        type="checkbox"
+                        checked={productForm.featured}
+                        onChange={(event) =>
+                          handleProductFormChange('featured', event.target.checked)
+                        }
+                      />
+                      <span>
+                        Producto destacado en home
+                        {productForm.featured && <span className="admin-featured-inline-badge">Destacado activo</span>}
+                      </span>
+                    </label>
+
+                    <div className="cart-inline-actions">
+                      <button
+                        type="submit"
+                        className="product-detail-button"
+                        disabled={productSubmitting}
+                      >
+                        {productSubmitting
+                          ? 'Guardando producto...'
+                          : productForm.id
+                            ? 'Actualizar producto'
+                            : 'Crear producto'}
+                      </button>
+                    </div>
+                  </form>
+
+                  <div className="admin-image-preview-card">
+                    <div className="admin-image-preview-copy">
+                      <span className="order-label">Preview de imagen</span>
+                      <strong>{productForm.title.trim() || 'Producto en preparacion'}</strong>
+                      <p>
+                        Asi se vera la referencia visual del producto mientras trabajamos solo con
+                        `imageUrl`.
+                      </p>
+                      <p>
+                        Por ahora debe ser una URL directa a imagen; mas adelante este bloque puede
+                        conectarse a upload real.
+                      </p>
+                    </div>
+                    <AdminProductImage
+                      imageUrl={productForm.imageUrl.trim() || undefined}
+                      title={productForm.title.trim() || SITE.productFallbackTitle}
+                      onImageError={() => setProductImagePreviewFailed(true)}
+                      categoryName={
+                        categories.find(
+                          (category) => String(category.id) === productForm.categoryId,
+                        )?.name ?? 'Sin categoria'
+                      }
+                    />
+                  </div>
+                </section>
 
                 <section className="admin-panel-card">
                   <div className="admin-panel-card-header">
@@ -3329,6 +4073,10 @@ function AdminDashboard() {
                       <span className="order-label">Filtros del catalogo</span>
                       <h3>Encuentra y ordena productos rapidamente</h3>
                     </div>
+                    <span className="admin-toolbar-note">
+                      Total: {products.length} | Visibles: {visibleProducts.length} | Ocultos:{' '}
+                      {hiddenProducts.length}
+                    </span>
                   </div>
 
                   <div className="admin-filters-grid">
@@ -3358,7 +4106,9 @@ function AdminDashboard() {
                         value={productCategoryFilter}
                         onChange={(event) => setProductCategoryFilter(event.target.value)}
                       >
-                        <option value="all">Todas</option>
+                        <option value="all">
+                          {categoriesLoading ? 'Cargando categorias...' : 'Todas'}
+                        </option>
                         {categories.map((category) => (
                           <option key={category.id} value={category.id}>
                             {getCategoryDisplayName(category)}
@@ -3405,6 +4155,44 @@ function AdminDashboard() {
                         <option value="out">Sin stock</option>
                       </select>
                     </div>
+                    <div>
+                      <label className="cart-summary-label" htmlFor="admin-product-sort">
+                        Orden
+                      </label>
+                      <select
+                        id="admin-product-sort"
+                        className="cart-summary-input"
+                        value={productSortOption}
+                        onChange={(event) =>
+                          setProductSortOption(event.target.value as ProductSortOption)
+                        }
+                      >
+                        <option value="newest">Mas recientes</option>
+                        <option value="oldest">Mas antiguos</option>
+                        <option value="price_desc">Precio mayor</option>
+                        <option value="price_asc">Precio menor</option>
+                        <option value="low_stock">Stock bajo</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="cart-summary-label" htmlFor="admin-product-filter-featured">
+                        Destacado
+                      </label>
+                      <select
+                        id="admin-product-filter-featured"
+                        className="cart-summary-input"
+                        value={productFeaturedFilter}
+                        onChange={(event) =>
+                          setProductFeaturedFilter(
+                            event.target.value as 'all' | 'featured' | 'normal',
+                          )
+                        }
+                      >
+                        <option value="all">Todos</option>
+                        <option value="featured">Solo destacados</option>
+                        <option value="normal">No destacados</option>
+                      </select>
+                    </div>
                   </div>
 
                   <label className="admin-checkbox-field" htmlFor="admin-group-by-category">
@@ -3420,185 +4208,6 @@ function AdminDashboard() {
                   <span className="admin-filter-summary">
                     Mostrando {filteredProducts.length} de {products.length} producto(s).
                   </span>
-                </section>
-
-                <section className="admin-panel-card">
-                  <div className="admin-panel-card-header">
-                    <div>
-                      <span className="order-label">
-                        {productForm.id ? 'Edicion de producto' : 'Nuevo producto'}
-                      </span>
-                      <h3>{productForm.id ? `Producto #${productForm.id}` : 'Crear producto'}</h3>
-                    </div>
-                    {productForm.id && (
-                      <button
-                        type="button"
-                        className="product-detail-secondary-button"
-                        onClick={resetProductForm}
-                      >
-                        Cancelar edicion
-                      </button>
-                    )}
-                  </div>
-
-                  <form className="admin-product-form" onSubmit={handleProductSubmit}>
-                    <label className="cart-summary-label" htmlFor="admin-product-title">
-                      Titulo
-                    </label>
-                    <input
-                      id="admin-product-title"
-                      className="cart-summary-input"
-                      type="text"
-                      value={productForm.title}
-                      onChange={(event) => handleProductFormChange('title', event.target.value)}
-                    />
-
-                    <label className="cart-summary-label" htmlFor="admin-product-slug">
-                      Slug
-                    </label>
-                    <input
-                      id="admin-product-slug"
-                      className="cart-summary-input"
-                      type="text"
-                      value={productForm.slug}
-                      onChange={(event) => handleProductFormChange('slug', event.target.value)}
-                    />
-
-                    <label className="cart-summary-label" htmlFor="admin-product-category">
-                      Categoria
-                    </label>
-                    <select
-                      id="admin-product-category"
-                      className="cart-summary-input"
-                      value={productForm.categoryId}
-                      onChange={(event) =>
-                        handleProductFormChange('categoryId', event.target.value)
-                      }
-                    >
-                      <option value="">Selecciona una categoria</option>
-                      {categories.map((category) => (
-                        <option key={category.id} value={category.id}>
-                          {getCategoryDisplayName(category)}
-                        </option>
-                      ))}
-                    </select>
-
-                    <label className="cart-summary-label" htmlFor="admin-product-price">
-                      Precio
-                    </label>
-                    <input
-                      id="admin-product-price"
-                      className="cart-summary-input"
-                      type="number"
-                      min="0"
-                      step="0.01"
-                      value={productForm.price}
-                      onChange={(event) => handleProductFormChange('price', event.target.value)}
-                    />
-
-                    <label className="cart-summary-label" htmlFor="admin-product-stock">
-                      Stock
-                    </label>
-                    <input
-                      id="admin-product-stock"
-                      className="cart-summary-input"
-                      type="number"
-                      min="0"
-                      step="1"
-                      value={productForm.stock}
-                      onChange={(event) => handleProductFormChange('stock', event.target.value)}
-                    />
-
-                    <label className="cart-summary-label" htmlFor="admin-product-image">
-                      Image URL
-                    </label>
-                    <input
-                      id="admin-product-image"
-                      className="cart-summary-input"
-                      type="url"
-                      value={productForm.imageUrl}
-                      onChange={(event) => handleProductFormChange('imageUrl', event.target.value)}
-                      placeholder="https://sitio.com/imagen-producto.jpg"
-                    />
-                    <p className="admin-field-help">
-                      Usa por ahora una URL publica de imagen en internet. Mas adelante podremos
-                      conectar subida real de archivos desde el panel.
-                    </p>
-
-                    <label className="cart-summary-label" htmlFor="admin-product-description">
-                      Descripcion
-                    </label>
-                    <textarea
-                      id="admin-product-description"
-                      className="cart-summary-textarea"
-                      value={productForm.description}
-                      onChange={(event) =>
-                        handleProductFormChange('description', event.target.value)
-                      }
-                    />
-
-                    <label
-                      className="cart-summary-label"
-                      htmlFor="admin-product-specifications"
-                    >
-                      Specifications
-                    </label>
-                    <textarea
-                      id="admin-product-specifications"
-                      className="cart-summary-textarea"
-                      value={productForm.specificationsText}
-                      onChange={(event) =>
-                        handleProductFormChange('specificationsText', event.target.value)
-                      }
-                      placeholder={`Material: PVC\nAltura: 28 cm\nEdicion: Coleccionista`}
-                    />
-
-                    <label className="admin-checkbox-field" htmlFor="admin-product-visible">
-                      <input
-                        id="admin-product-visible"
-                        type="checkbox"
-                        checked={productForm.isVisible}
-                        onChange={(event) =>
-                          handleProductFormChange('isVisible', event.target.checked)
-                        }
-                      />
-                      <span>Producto visible en catalogo</span>
-                    </label>
-
-                    <div className="cart-inline-actions">
-                      <button
-                        type="submit"
-                        className="product-detail-button"
-                        disabled={productSubmitting}
-                      >
-                        {productSubmitting
-                          ? 'Guardando producto...'
-                          : productForm.id
-                            ? 'Actualizar producto'
-                            : 'Crear producto'}
-                      </button>
-                    </div>
-                  </form>
-
-                  <div className="admin-image-preview-card">
-                    <div className="admin-image-preview-copy">
-                      <span className="order-label">Preview de imagen</span>
-                      <strong>{productForm.title.trim() || 'Producto en preparacion'}</strong>
-                      <p>
-                        Asi se vera la referencia visual del producto mientras trabajamos solo con
-                        `imageUrl`.
-                      </p>
-                    </div>
-                    <AdminProductImage
-                      imageUrl={productForm.imageUrl.trim() || undefined}
-                      title={productForm.title.trim() || 'Producto Locotoons'}
-                      categoryName={
-                        categories.find(
-                          (category) => String(category.id) === productForm.categoryId,
-                        )?.name ?? 'Sin categoria'
-                      }
-                    />
-                  </div>
                 </section>
 
                 <section className="admin-panel-card">
@@ -3626,14 +4235,12 @@ function AdminDashboard() {
                         <>
                           <div className="admin-table-head admin-product-table-head">
                             <span>Producto</span>
-                            <span>Categoria</span>
-                            <span>Precio</span>
-                            <span>Stock</span>
-                            <span>Estado</span>
+                            <span>Datos</span>
+                            <span>Estados</span>
                             <span>Acciones</span>
                           </div>
                           <div className="admin-product-list">
-                            {filteredProducts.map((product) => renderProductRow(product))}
+                            {orderedFilteredProducts.map((product) => renderProductRow(product))}
                           </div>
                         </>
                       )}
@@ -3648,10 +4255,8 @@ function AdminDashboard() {
                               </summary>
                               <div className="admin-table-head admin-product-table-head">
                                 <span>Producto</span>
-                                <span>Categoria</span>
-                                <span>Precio</span>
-                                <span>Stock</span>
-                                <span>Estado</span>
+                                <span>Datos</span>
+                                <span>Estados</span>
                                 <span>Acciones</span>
                               </div>
                               <div className="admin-product-list">
@@ -3668,10 +4273,8 @@ function AdminDashboard() {
                               </summary>
                               <div className="admin-table-head admin-product-table-head">
                                 <span>Producto</span>
-                                <span>Categoria</span>
-                                <span>Precio</span>
-                                <span>Stock</span>
-                                <span>Estado</span>
+                                <span>Datos</span>
+                                <span>Estados</span>
                                 <span>Acciones</span>
                               </div>
                               <div className="admin-product-list">
@@ -3724,7 +4327,7 @@ function AdminDashboard() {
                             <div className="order-card-header">
                               <div>
                                 <span className="order-label">Orden #{order.id}</span>
-                                <h3>{new Date(order.createdAt).toLocaleDateString('es-CL')}</h3>
+                                <h3>{new Date(order.createdAt).toLocaleDateString(BUSINESS.locale)}</h3>
                               </div>
                               <div className="order-summary-meta">
                                 <span className="order-status">
@@ -3737,15 +4340,19 @@ function AdminDashboard() {
                             <div className="admin-order-summary-row">
                               <div>
                                 <span className="order-label">Cliente</span>
-                                <p>
-                                  {order.customerName ??
-                                    order.customerEmail ??
-                                    `Usuario #${order.userId ?? 'N/A'}`}
-                                </p>
+                                <p>{getOrderCustomerName(order)}</p>
                               </div>
                               <div>
                                 <span className="order-label">Contacto</span>
-                                <p>{order.customerPhone ?? order.customerEmail ?? 'Sin telefono'}</p>
+                                <p>
+                                  {order.customerPhone ??
+                                    getOrderCustomerEmail(order) ??
+                                    'Sin telefono'}
+                                </p>
+                              </div>
+                              <div>
+                                <span className="order-label">Pago</span>
+                                <p>{getPaymentMethodLabel(order.paymentMethod)}</p>
                               </div>
                             </div>
 
@@ -3758,7 +4365,9 @@ function AdminDashboard() {
                               >
                                 {orderBusyId === order.id && selectedOrder?.id !== order.id
                                   ? 'Cargando...'
-                                  : 'Ver detalle'}
+                                  : selectedOrder?.id === order.id
+                                    ? 'Ocultar detalle'
+                                    : 'Ver detalle'}
                               </button>
                               <select
                                 className="admin-status-select"
@@ -3774,91 +4383,111 @@ function AdminDashboard() {
                                   </option>
                                 ))}
                               </select>
+                              {order.status !== 'paid' && (
+                                <button
+                                  type="button"
+                                  className="product-detail-secondary-button"
+                                  onClick={() => void handleStatusChange(order.id, 'paid')}
+                                  disabled={orderBusyId === order.id}
+                                >
+                                  Marcar pagada
+                                </button>
+                              )}
                             </div>
+
+                            {selectedOrder?.id === order.id && (
+                              <div className="admin-order-inline-detail">
+                                <div className="admin-panel-card-header">
+                                  <div>
+                                    <span className="order-label">Detalle de orden</span>
+                                    <h3>Orden #{selectedOrder.id}</h3>
+                                  </div>
+                                  <span className="order-status">
+                                    {getOrderStatusLabel(selectedOrder.status)}
+                                  </span>
+                                </div>
+
+                                <div className="admin-order-detail-body">
+                                  <div className="order-meta-grid">
+                                    <div>
+                                      <span className="order-label">Estado</span>
+                                      <p>{getOrderStatusLabel(selectedOrder.status)}</p>
+                                    </div>
+                                    <div>
+                                      <span className="order-label">Tipo</span>
+                                      <p>{getOrderCustomerTypeLabel(selectedOrder)}</p>
+                                    </div>
+                                    <div>
+                                      <span className="order-label">Metodo de pago</span>
+                                      <p>{getPaymentMethodLabel(selectedOrder.paymentMethod)}</p>
+                                    </div>
+                                    <div>
+                                      <span className="order-label">Nombre</span>
+                                      <p>{getOrderCustomerName(selectedOrder)}</p>
+                                    </div>
+                                    <div>
+                                      <span className="order-label">Email</span>
+                                      <p>
+                                        {getOrderCustomerEmail(selectedOrder) ??
+                                          'Email no informado'}
+                                      </p>
+                                    </div>
+                                    <div>
+                                      <span className="order-label">Telefono</span>
+                                      <p>{selectedOrder.customerPhone ?? 'No informado'}</p>
+                                    </div>
+                                    <div>
+                                      <span className="order-label">Total</span>
+                                      <p>{formatPrice(selectedOrder.total)}</p>
+                                    </div>
+                                  </div>
+
+                                  <div>
+                                    <span className="order-label">Direccion de envio</span>
+                                    <p className="admin-order-address">
+                                      {selectedOrder.shippingAddress || 'No informada'}
+                                    </p>
+                                  </div>
+
+                                  <div className="order-items-list">
+                                    {selectedOrder.items.map((item) => (
+                                      <div key={item.id} className="order-item-row">
+                                        <span>Producto #{item.productId}</span>
+                                        <span>Cantidad: {item.quantity}</span>
+                                        <strong>
+                                          {formatPrice(Number(item.unitPrice) * item.quantity)}
+                                        </strong>
+                                      </div>
+                                    ))}
+                                  </div>
+
+                                  <div className="admin-order-inline-actions">
+                                    <label className="cart-summary-label" htmlFor={`order-status-${order.id}`}>
+                                      Cambiar estado
+                                    </label>
+                                    <select
+                                      id={`order-status-${order.id}`}
+                                      className="admin-status-select"
+                                      value={selectedOrder.status}
+                                      onChange={(event) =>
+                                        void handleStatusChange(selectedOrder.id, event.target.value)
+                                      }
+                                      disabled={orderBusyId === selectedOrder.id}
+                                    >
+                                      {ADMIN_ORDER_STATUSES.map((status) => (
+                                        <option key={status} value={status}>
+                                          {getOrderStatusLabel(status)}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  </div>
+                                </div>
+                              </div>
+                            )}
                           </article>
                         ))}
                       </div>
                     </div>
-
-                    <aside className="admin-order-detail">
-                      <div className="admin-panel-card">
-                        <div className="admin-panel-card-header">
-                          <div>
-                            <span className="order-label">Detalle de orden</span>
-                            <h3>
-                              {selectedOrder
-                                ? `Orden #${selectedOrder.id}`
-                                : 'Selecciona una orden'}
-                            </h3>
-                          </div>
-                        </div>
-
-                        {selectedOrder ? (
-                          <div className="admin-order-detail-body">
-                            <div className="order-meta-grid">
-                              <div>
-                                <span className="order-label">Estado</span>
-                                <p>{getOrderStatusLabel(selectedOrder.status)}</p>
-                              </div>
-                              <div>
-                                <span className="order-label">Total</span>
-                                <p>{formatPrice(selectedOrder.total)}</p>
-                              </div>
-                              <div>
-                                <span className="order-label">Cliente</span>
-                                <p>
-                                  {selectedOrder.customerName ??
-                                    `Usuario #${selectedOrder.userId ?? 'N/A'}`}
-                                </p>
-                              </div>
-                              <div>
-                                <span className="order-label">Email</span>
-                                <p>
-                                  {selectedOrder.customerEmail ??
-                                    'Cuenta registrada sin email invitado'}
-                                </p>
-                              </div>
-                              <div>
-                                <span className="order-label">Telefono</span>
-                                <p>{selectedOrder.customerPhone ?? 'No informado'}</p>
-                              </div>
-                              <div>
-                                <span className="order-label">Creada</span>
-                                <p>
-                                  {new Date(selectedOrder.createdAt).toLocaleString('es-CL')}
-                                </p>
-                              </div>
-                            </div>
-
-                            <div>
-                              <span className="order-label">Direccion de envio</span>
-                              <p className="admin-order-address">
-                                {selectedOrder.shippingAddress}
-                              </p>
-                            </div>
-
-                            <div className="order-items-list">
-                              {selectedOrder.items.map((item) => (
-                                <div key={item.id} className="order-item-row">
-                                  <span>Producto #{item.productId}</span>
-                                  <span>Cantidad: {item.quantity}</span>
-                                  <strong>
-                                    {formatPrice(Number(item.unitPrice) * item.quantity)}
-                                  </strong>
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        ) : (
-                          <EmptyState
-                            compact
-                            tag="Detalle"
-                            title="Selecciona una orden"
-                            description="Veras aqui la direccion, cliente y productos incluidos."
-                          />
-                        )}
-                      </div>
-                    </aside>
                   </div>
                 )}
               </section>
@@ -3997,7 +4626,7 @@ function ProductDetailPage() {
 
   const whatsappMessage = product
     ? `Hola, quiero comprar este producto: ${product.title} (x1) Total: ${formatPrice(product.price)}`
-    : 'Hola, quiero consultar por un producto de Locotoons.';
+    : BUSINESS.whatsapp.productInquiryFallback;
 
   return (
     <div className="store-shell">
@@ -4093,20 +4722,22 @@ function ProductDetailPage() {
                   </div>
                 )}
 
-                <div className="product-detail-actions">
-                  <button
-                    type="button"
-                    className="product-detail-button"
-                    onClick={() => void handleAddToCart()}
-                    disabled={addingToCart || product.stock <= 0}
-                  >
-                    {product.stock <= 0
-                      ? 'Sin stock disponible'
-                      : addingToCart
-                        ? 'Agregando a tu carrito...'
-                        : 'Agregar al carrito'}
-                  </button>
-                </div>
+                {!showCartPrompt && (
+                  <div className="product-detail-actions">
+                    <button
+                      type="button"
+                      className="product-detail-button"
+                      onClick={() => void handleAddToCart()}
+                      disabled={addingToCart || product.stock <= 0}
+                    >
+                      {product.stock <= 0
+                        ? 'Sin stock disponible'
+                        : addingToCart
+                          ? 'Agregando a tu carrito...'
+                          : 'Agregar al carrito'}
+                    </button>
+                  </div>
+                )}
                 <div className="product-detail-support-actions">
                   <a
                     href={buildWhatsAppUrl(whatsappMessage)}

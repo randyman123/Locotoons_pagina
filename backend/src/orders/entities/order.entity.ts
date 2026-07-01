@@ -21,6 +21,9 @@ export class Order {
   @Column({ default: 'pending' })
   status: 'pending' | 'paid' | 'shipped' | 'delivered' | 'cancelled';
 
+  @Column({ default: 'bank_transfer' })
+  paymentMethod: 'bank_transfer' | 'whatsapp_coordination';
+
   @Column('decimal', { precision: 10, scale: 2 })
   total: number;
 

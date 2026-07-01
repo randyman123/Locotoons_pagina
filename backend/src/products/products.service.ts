@@ -38,6 +38,7 @@ export class ProductsService {
       ...createProductDto,
       specifications: createProductDto.specifications ?? [],
       isVisible: createProductDto.isVisible ?? true,
+      featured: createProductDto.featured ?? false,
       category: category ?? undefined,
     });
     return this.productRepository.save(product);
@@ -47,6 +48,7 @@ export class ProductsService {
     return this.productRepository.find({
       where: { isVisible: true },
       relations: ['category'],
+      order: { featured: 'DESC', createdAt: 'DESC' },
     });
   }
 
@@ -101,7 +103,17 @@ export class ProductsService {
       const cartRefs = await this.countCartReferences(product.id);
       const orderRefs = await this.countOrderReferences(product.id);
 
-      if (cartRefs > 0) {
+      if (product.isVisible === false) {
+        summary.kept.push({
+          id: product.id,
+          title: product.title,
+          slug: product.slug,
+          reason: 'Producto demo ya estaba oculto',
+        });
+        continue;
+      }
+
+      if (cartRefs > 0 || orderRefs > 0) {
         product.isVisible = false;
         await this.productRepository.save(product);
         summary.hidden.push({
@@ -114,8 +126,9 @@ export class ProductsService {
         continue;
       }
 
-      await this.productRepository.delete(product.id);
-      summary.deleted.push({
+      product.isVisible = false;
+      await this.productRepository.save(product);
+      summary.hidden.push({
         id: product.id,
         title: product.title,
         slug: product.slug,
@@ -166,6 +179,7 @@ export class ProductsService {
             imageUrl: seedProduct.imageUrl || undefined,
             specifications: seedProduct.specifications,
             isVisible: true,
+            featured: false,
             category,
           }),
         );
@@ -187,6 +201,7 @@ export class ProductsService {
       existingProduct.imageUrl = seedProduct.imageUrl || undefined;
       existingProduct.specifications = seedProduct.specifications;
       existingProduct.isVisible = true;
+      existingProduct.featured = existingProduct.featured ?? false;
       existingProduct.category = category;
 
       const updatedProduct = await this.productRepository.save(existingProduct);
@@ -257,17 +272,44 @@ export class ProductsService {
       throw new NotFoundException('El producto no existe');
     }
 
+    const cartRefs = await this.countCartReferences(product.id);
+    const orderRefs = await this.countOrderReferences(product.id);
+
+    if (cartRefs > 0 || orderRefs > 0) {
+      product.isVisible = false;
+      await this.productRepository.save(product);
+
+      return {
+        deleted: false,
+        hidden: true,
+        id,
+        cartRefs,
+        orderRefs,
+        message: 'El producto tiene relaciones y fue ocultado del catalogo publico.',
+      };
+    }
+
     try {
       await this.productRepository.remove(product);
     } catch (error) {
       if (this.isForeignKeyConstraintError(error)) {
-        throw new ConflictException('No se puede eliminar el producto porque tiene registros asociados');
+        product.isVisible = false;
+        await this.productRepository.save(product);
+
+        return {
+          deleted: false,
+          hidden: true,
+          id,
+          cartRefs,
+          orderRefs,
+          message: 'El producto tiene relaciones y fue ocultado del catalogo publico.',
+        };
       }
 
       throw error;
     }
 
-    return { deleted: true, id };
+    return { deleted: true, hidden: false, id, cartRefs, orderRefs };
   }
 
   private isForeignKeyConstraintError(error: unknown): boolean {
