@@ -20,6 +20,8 @@ import './App.css';
 import { SITE } from './config/site.config';
 import { BUSINESS } from './config/business.config';
 import { STORE_CATEGORY_PRESETS } from './config/categories.config';
+import { formatPrice } from './lib/price';
+import { normalizeCategoryValue, buildSlug } from './lib/strings';
 
 type Category = {
   id: number;
@@ -211,23 +213,6 @@ function decodeJwtPayload(token: string): AuthUser | null {
   }
 }
 
-function formatPrice(value: number | string) {
-  const amount = typeof value === 'string' ? Number(value) : value;
-  return new Intl.NumberFormat(BUSINESS.locale, {
-    style: 'currency',
-    currency: BUSINESS.currency,
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 0,
-  }).format(amount);
-}
-
-function normalizeCategoryValue(value: string | undefined | null) {
-  return (value ?? '')
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase()
-    .trim();
-}
 
 function normalizeProduct(product: Product): Product {
   return {
@@ -344,11 +329,6 @@ function buildWhatsAppUrl(message: string) {
   return `https://wa.me/${WHATSAPP_PHONE_NUMBER}?text=${encodeURIComponent(message)}`;
 }
 
-function buildSlug(value: string) {
-  return normalizeCategoryValue(value)
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '');
-}
 
 function createEmptyProductForm(): ProductFormState {
   return {
