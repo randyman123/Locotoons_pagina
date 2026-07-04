@@ -22,35 +22,34 @@ import { BUSINESS } from './config/business.config';
 import { STORE_CATEGORY_PRESETS } from './config/categories.config';
 import { formatPrice } from './lib/price';
 import { normalizeCategoryValue, buildSlug } from './lib/strings';
-
-type Category = {
-  id: number;
-  name: string;
-  slug: string;
-  description?: string;
-};
-
-type ProductCategory = {
-  id: number;
-  name: string;
-  slug: string;
-};
-
-type Product = {
-  id: number;
-  title: string;
-  slug: string;
-  description: string;
-  price: number | string;
-  stock: number;
-  imageUrl?: string;
-  specifications?: Array<{ label: string; value: string }>;
-  isVisible?: boolean;
-  featured?: boolean;
-  createdAt?: string;
-  updatedAt?: string;
-  category?: ProductCategory | null;
-};
+import { buildWhatsAppUrl } from './lib/whatsapp';
+import { normalizeProduct, normalizeCart } from './lib/normalize';
+import {
+  notifyStorefrontRefresh,
+  readGuestCart,
+  writeGuestCart,
+  readCustomerProfile,
+  saveCustomerProfile,
+} from './lib/storage';
+import {
+  getCategoryDisplayName,
+  getCategoryDescription,
+  sortStoreCategories,
+  filterStoreProducts,
+} from './lib/categories';
+import type {
+  Category,
+  Product,
+  CartProduct,
+  CartItem,
+  Cart,
+  AuthUser,
+  AuthContextValue,
+  PaymentMethod,
+  Order,
+  ProductSpecificationFormState,
+  ProductFormState,
+} from './types';
 
 type AdminProduct = Product & {
   isVisible: boolean;
@@ -67,82 +66,6 @@ type RegisterResponse = {
   role?: string;
 };
 
-type AuthUser = {
-  userId: number;
-  email: string;
-  role?: string;
-};
-
-type CartProduct = {
-  id: number;
-  title: string;
-  slug: string;
-  price: number | string;
-  stock: number;
-  imageUrl?: string;
-  category?: ProductCategory | null;
-};
-
-type CartItem = {
-  id: number | string;
-  quantity: number;
-  product: CartProduct;
-};
-
-type Cart = {
-  id: number;
-  userId: number;
-  items: CartItem[];
-};
-
-type AuthContextValue = {
-  token: string | null;
-  user: AuthUser | null;
-  isAuthenticated: boolean;
-  authReady: boolean;
-  cartCount: number;
-  login: (nextToken: string) => void;
-  logout: () => void;
-  refreshCartCount: () => Promise<void>;
-};
-
-type CustomerProfile = {
-  name: string;
-  email: string;
-  phone: string;
-  shippingAddress: string;
-};
-
-type OrderItem = {
-  id: number;
-  productId: number;
-  quantity: number;
-  unitPrice: number | string;
-};
-
-type Order = {
-  id: number;
-  userId?: number | null;
-  customerName?: string | null;
-  customerEmail?: string | null;
-  customerPhone?: string | null;
-  status: string;
-  paymentMethod?: PaymentMethod;
-  total: number | string;
-  shippingAddress: string;
-  createdAt: string;
-  items: OrderItem[];
-  customerType?: 'guest' | 'registered';
-  accountName?: string | null;
-  accountEmail?: string | null;
-};
-
-type ProductSpecificationFormState = {
-  label: string;
-  value: string;
-};
-
-type PaymentMethod = 'bank_transfer';
 
 type ProductSortOption = 'newest' | 'oldest' | 'price_desc' | 'price_asc' | 'low_stock';
 
@@ -154,29 +77,12 @@ type OrderConfirmation = {
   customerPhone?: string;
 };
 
-type ProductFormState = {
-  id?: number;
-  title: string;
-  slug: string;
-  description: string;
-  price: string;
-  stock: string;
-  imageUrl: string;
-  categoryId: string;
-  isVisible: boolean;
-  featured: boolean;
-  specifications: ProductSpecificationFormState[];
-};
-
 const ADMIN_ORDER_STATUSES = ['pending', 'paid', 'shipped', 'delivered', 'cancelled'] as const;
 const SPECIFICATION_LABEL_PLACEHOLDERS = SITE.specificationLabelPlaceholders;
 
 const AUTH_TOKEN_KEY = BUSINESS.storageKeys.authToken;
 const STOREFRONT_REFRESH_EVENT = BUSINESS.events.storefrontRefresh;
 const CART_REFRESH_EVENT = BUSINESS.events.cartRefresh;
-const GUEST_CART_KEY = BUSINESS.storageKeys.guestCart;
-const CUSTOMER_PROFILE_KEY = BUSINESS.storageKeys.customerProfile;
-const WHATSAPP_PHONE_NUMBER = BUSINESS.contact.whatsappPhone;
 
 const api = axios.create({
   baseURL: import.meta.env.VITE_API_URL || '/api',
@@ -214,120 +120,6 @@ function decodeJwtPayload(token: string): AuthUser | null {
 }
 
 
-function normalizeProduct(product: Product): Product {
-  return {
-    ...product,
-    description: product.description ?? '',
-    imageUrl: product.imageUrl ?? undefined,
-    specifications: Array.isArray(product.specifications) ? product.specifications : [],
-    isVisible: product.isVisible ?? true,
-    featured: product.featured ?? false,
-    category: product.category
-      ? {
-          id: product.category.id,
-          name: product.category.name,
-          slug: product.category.slug,
-        }
-      : null,
-  };
-}
-
-function normalizeCartProduct(product: CartProduct): CartProduct {
-  return {
-    ...product,
-    imageUrl: product.imageUrl ?? undefined,
-    category: product.category
-      ? {
-          id: product.category.id,
-          name: product.category.name,
-          slug: product.category.slug,
-        }
-      : null,
-  };
-}
-
-function normalizeCart(cart: Cart | null): Cart | null {
-  if (!cart) {
-    return null;
-  }
-
-  return {
-    ...cart,
-    items: (cart.items ?? []).map((item) => ({
-      ...item,
-      product: normalizeCartProduct(item.product),
-    })),
-  };
-}
-
-function notifyStorefrontRefresh() {
-  window.dispatchEvent(new CustomEvent(STOREFRONT_REFRESH_EVENT));
-}
-
-function notifyCartRefresh() {
-  window.dispatchEvent(new CustomEvent(CART_REFRESH_EVENT));
-}
-
-function readGuestCart(): CartItem[] {
-  try {
-    const storedValue = localStorage.getItem(GUEST_CART_KEY);
-    if (!storedValue) {
-      return [];
-    }
-
-    const parsedValue = JSON.parse(storedValue) as CartItem[];
-    return Array.isArray(parsedValue)
-      ? parsedValue.map((item) => ({
-          ...item,
-          product: normalizeCartProduct(item.product),
-        }))
-      : [];
-  } catch {
-    return [];
-  }
-}
-
-function writeGuestCart(items: CartItem[]) {
-  localStorage.setItem(GUEST_CART_KEY, JSON.stringify(items));
-  notifyCartRefresh();
-}
-
-function readCustomerProfile(): CustomerProfile {
-  try {
-    const storedValue = localStorage.getItem(CUSTOMER_PROFILE_KEY);
-    if (!storedValue) {
-      return {
-        name: '',
-        email: '',
-        phone: '',
-        shippingAddress: '',
-      };
-    }
-
-    const parsedValue = JSON.parse(storedValue) as Partial<CustomerProfile>;
-    return {
-      name: parsedValue.name ?? '',
-      email: parsedValue.email ?? '',
-      phone: parsedValue.phone ?? '',
-      shippingAddress: parsedValue.shippingAddress ?? '',
-    };
-  } catch {
-    return {
-      name: '',
-      email: '',
-      phone: '',
-      shippingAddress: '',
-    };
-  }
-}
-
-function saveCustomerProfile(profile: CustomerProfile) {
-  localStorage.setItem(CUSTOMER_PROFILE_KEY, JSON.stringify(profile));
-}
-
-function buildWhatsAppUrl(message: string) {
-  return `https://wa.me/${WHATSAPP_PHONE_NUMBER}?text=${encodeURIComponent(message)}`;
-}
 
 
 function createEmptyProductForm(): ProductFormState {
@@ -443,93 +235,6 @@ function getStockBadge(stock: number) {
   };
 }
 
-function getCategoryPreset(category?: Pick<Category, 'name' | 'slug'> | Pick<ProductCategory, 'name' | 'slug'> | null) {
-  if (!category) {
-    return null;
-  }
-
-  const normalizedName = normalizeCategoryValue(category.name);
-  const normalizedSlug = normalizeCategoryValue(category.slug);
-
-  return (
-    STORE_CATEGORY_PRESETS.find((preset) => {
-      const presetName = normalizeCategoryValue(preset.name);
-      const presetSlug = normalizeCategoryValue(preset.slug);
-
-      return normalizedName === presetName || normalizedSlug === presetSlug;
-    }) ?? null
-  );
-}
-
-function getCategoryDisplayName(category?: Pick<Category, 'name' | 'slug'> | Pick<ProductCategory, 'name' | 'slug'> | null) {
-  return getCategoryPreset(category)?.name ?? category?.name ?? 'Coleccion destacada';
-}
-
-function getCategoryDescription(category: Category) {
-  return getCategoryPreset(category)?.description ?? category.description ?? 'Categoria disponible en la tienda.';
-}
-
-function sortStoreCategories(categories: Category[]) {
-  return [...categories].sort((left, right) => {
-    const leftIndex = STORE_CATEGORY_PRESETS.findIndex((preset) => preset.slug === left.slug);
-    const rightIndex = STORE_CATEGORY_PRESETS.findIndex((preset) => preset.slug === right.slug);
-    const normalizedLeftName = normalizeCategoryValue(left.name);
-    const normalizedRightName = normalizeCategoryValue(right.name);
-    const presetLeftByName = STORE_CATEGORY_PRESETS.findIndex(
-      (preset) => normalizeCategoryValue(preset.name) === normalizedLeftName,
-    );
-    const presetRightByName = STORE_CATEGORY_PRESETS.findIndex(
-      (preset) => normalizeCategoryValue(preset.name) === normalizedRightName,
-    );
-    const resolvedLeftIndex = leftIndex >= 0 ? leftIndex : presetLeftByName;
-    const resolvedRightIndex = rightIndex >= 0 ? rightIndex : presetRightByName;
-
-    if (resolvedLeftIndex === -1 && resolvedRightIndex === -1) {
-      return left.name.localeCompare(right.name, 'es');
-    }
-
-    if (resolvedLeftIndex === -1) {
-      return 1;
-    }
-
-    if (resolvedRightIndex === -1) {
-      return -1;
-    }
-
-    return resolvedLeftIndex - resolvedRightIndex;
-  });
-}
-
-function filterStoreProducts(products: Product[], categorySlug: string | null, searchValue: string) {
-  const normalizedSearch = normalizeCategoryValue(searchValue);
-  const normalizedCategorySlug = normalizeCategoryValue(categorySlug);
-
-  return products.filter((product) => {
-    if (product.isVisible === false) {
-      return false;
-    }
-
-    const matchesCategory = normalizedCategorySlug
-      ? normalizeCategoryValue(product.category?.slug) === normalizedCategorySlug
-      : true;
-    const matchesSearch = normalizedSearch
-      ? [
-          product.title,
-          product.description,
-          product.category?.name ?? '',
-          ...(product.specifications ?? []).flatMap((specification) => [
-            specification.label,
-            specification.value,
-          ]),
-        ]
-          .join(' ')
-          .toLowerCase()
-          .includes(normalizedSearch)
-      : true;
-
-    return matchesCategory && matchesSearch;
-  }).sort((left, right) => Number(right.featured === true) - Number(left.featured === true));
-}
 
 function useStorefrontData() {
   const [categories, setCategories] = useState<Category[]>([]);
