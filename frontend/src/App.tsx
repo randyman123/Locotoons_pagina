@@ -23,6 +23,8 @@ import { STORE_CATEGORY_PRESETS } from './config/categories.config';
 import { formatPrice } from './lib/price';
 import { normalizeCategoryValue, buildSlug } from './lib/strings';
 import { buildWhatsAppUrl } from './lib/whatsapp';
+import { api } from './lib/api';
+import { decodeJwtPayload } from './lib/auth';
 import { normalizeProduct, normalizeCart } from './lib/normalize';
 import {
   notifyStorefrontRefresh,
@@ -84,40 +86,9 @@ const AUTH_TOKEN_KEY = BUSINESS.storageKeys.authToken;
 const STOREFRONT_REFRESH_EVENT = BUSINESS.events.storefrontRefresh;
 const CART_REFRESH_EVENT = BUSINESS.events.cartRefresh;
 
-const api = axios.create({
-  baseURL: import.meta.env.VITE_API_URL || '/api',
-});
-
-api.interceptors.request.use((config) => {
-  const token = localStorage.getItem(AUTH_TOKEN_KEY);
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`;
-  }
-
-  return config;
-});
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 
-function decodeJwtPayload(token: string): AuthUser | null {
-  try {
-    const payload = token.split('.')[1];
-    if (!payload) {
-      return null;
-    }
-
-    const normalized = payload.replace(/-/g, '+').replace(/_/g, '/');
-    const decoded = JSON.parse(window.atob(normalized));
-
-    return {
-      userId: Number(decoded.sub),
-      email: String(decoded.email),
-      role: decoded.role ? String(decoded.role) : undefined,
-    };
-  } catch {
-    return null;
-  }
-}
 
 
 
