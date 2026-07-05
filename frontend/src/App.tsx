@@ -6,7 +6,6 @@ import {
 import axios from 'axios';
 import {
   Link,
-  Navigate,
   Route,
   Routes,
   useLocation,
@@ -31,6 +30,8 @@ import { SiteFooter } from './components/layout/SiteFooter';
 import { GlobalCategoryNav } from './components/layout/CategoryMenu';
 import { StorefrontSidebar } from './components/layout/StorefrontSidebar';
 import { AdminProductImage } from './components/admin/AdminProductImage';
+import { PrivateRoute } from './components/routes/PrivateRoute';
+import { AdminRoute } from './components/routes/AdminRoute';
 import {
   getOrderStatusLabel,
   getOrderCustomerName,
@@ -109,75 +110,6 @@ const CART_REFRESH_EVENT = BUSINESS.events.cartRefresh;
 
 
 
-function PrivateRoute({ children }: { children: ReactNode }) {
-  const auth = useAuth();
-  const location = useLocation();
-
-  if (!auth.authReady) {
-    return (
-      <div className="store-shell">
-        <div className="top-strip" />
-        <SiteHeader />
-        <GlobalCategoryNav />
-        <main className="page-main">
-          <LoadingState message="Recuperando tu sesion..." />
-        </main>
-        <SiteFooter />
-      </div>
-    );
-  }
-
-  if (!auth.isAuthenticated) {
-    return <Navigate to="/login" replace state={{ from: location.pathname }} />;
-  }
-
-  return <>{children}</>;
-}
-
-function AdminRoute({ children }: { children: ReactNode }) {
-  const auth = useAuth();
-
-  if (!auth.authReady) {
-    return (
-      <div className="store-shell">
-        <div className="top-strip" />
-        <SiteHeader />
-        <main className="page-main">
-          <LoadingState message="Validando permisos de administrador..." />
-        </main>
-        <SiteFooter />
-      </div>
-    );
-  }
-
-  if (!auth.isAuthenticated) {
-    return <Navigate to="/login" replace state={{ from: '/admin' }} />;
-  }
-
-  if (auth.user?.role !== 'admin') {
-    return (
-      <div className="store-shell">
-        <div className="top-strip" />
-        <SiteHeader />
-        <main className="page-main">
-          <EmptyState
-            tag="Admin"
-            title="No tienes permisos para entrar al panel"
-            description="Esta seccion solo esta disponible para usuarios administradores."
-            action={
-              <Link to="/" className="product-detail-secondary-link">
-                Volver a la tienda
-              </Link>
-            }
-          />
-        </main>
-        <SiteFooter />
-      </div>
-    );
-  }
-
-  return <>{children}</>;
-}
 
 
 function ProductCatalogSection({
