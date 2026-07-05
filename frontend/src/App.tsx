@@ -23,6 +23,13 @@ import { normalizeCategoryValue, buildSlug } from './lib/strings';
 import { buildWhatsAppUrl } from './lib/whatsapp';
 import { api } from './lib/api';
 import { AuthProvider, useAuth } from './context/AuthContext';
+import { useStorefrontData } from './hooks/useStorefrontData';
+import { LoadingState } from './components/ui/LoadingState';
+import { EmptyState } from './components/ui/EmptyState';
+import { SiteHeader } from './components/layout/SiteHeader';
+import { SiteFooter } from './components/layout/SiteFooter';
+import { GlobalCategoryNav } from './components/layout/CategoryMenu';
+import { StorefrontSidebar } from './components/layout/StorefrontSidebar';
 import {
   getOrderStatusLabel,
   getOrderCustomerName,
@@ -47,7 +54,6 @@ import {
 } from './lib/storage';
 import {
   getCategoryDisplayName,
-  getCategoryDescription,
   sortStoreCategories,
   filterStoreProducts,
 } from './lib/categories';
@@ -92,7 +98,6 @@ type OrderConfirmation = {
 const ADMIN_ORDER_STATUSES = ['pending', 'paid', 'shipped', 'delivered', 'cancelled'] as const;
 const SPECIFICATION_LABEL_PLACEHOLDERS = SITE.specificationLabelPlaceholders;
 
-const STOREFRONT_REFRESH_EVENT = BUSINESS.events.storefrontRefresh;
 const CART_REFRESH_EVENT = BUSINESS.events.cartRefresh;
 
 
@@ -100,97 +105,8 @@ const CART_REFRESH_EVENT = BUSINESS.events.cartRefresh;
 
 
 
-function useStorefrontData() {
-  const [categories, setCategories] = useState<Category[]>([]);
-  const [products, setProducts] = useState<Product[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    async function loadStorefront() {
-      try {
-        setLoading(true);
-        setError(null);
-
-        const [categoriesResponse, productsResponse] = await Promise.all([
-          api.get<Category[]>('/categories'),
-          api.get<Product[]>('/products'),
-        ]);
-
-        if (cancelled) {
-          return;
-        }
-
-        setCategories(categoriesResponse.data);
-        setProducts(productsResponse.data.map(normalizeProduct));
-      } catch {
-        if (!cancelled) {
-          setError('No pudimos cargar el catalogo en este momento. Intenta nuevamente en unos segundos.');
-        }
-      } finally {
-        if (!cancelled) {
-          setLoading(false);
-        }
-      }
-    }
-
-    void loadStorefront();
-
-    function handleStorefrontRefresh() {
-      void loadStorefront();
-    }
-
-    window.addEventListener(STOREFRONT_REFRESH_EVENT, handleStorefrontRefresh);
-
-    return () => {
-      cancelled = true;
-      window.removeEventListener(STOREFRONT_REFRESH_EVENT, handleStorefrontRefresh);
-    };
-  }, []);
-
-  const orderedCategories = sortStoreCategories(categories);
-  const menuCategories = orderedCategories.length > 0 ? orderedCategories : STORE_CATEGORY_PRESETS;
-
-  return {
-    categories,
-    products,
-    loading,
-    error,
-    orderedCategories,
-    menuCategories,
-  };
-}
 
 
-function LoadingState({ message }: { message: string }) {
-  return (
-    <div className="message-box loading-box" role="status" aria-live="polite">
-      <span className="loading-dot" aria-hidden="true" />
-      <span>{message}</span>
-    </div>
-  );
-}
-
-type EmptyStateProps = {
-  tag: string;
-  title: string;
-  description: string;
-  action?: ReactNode;
-  compact?: boolean;
-};
-
-function EmptyState({ tag, title, description, action, compact = false }: EmptyStateProps) {
-  return (
-    <div className={compact ? 'empty-state-card compact-empty-state' : 'empty-state-card'}>
-      <span className="hero-tag">{tag}</span>
-      <h1>{title}</h1>
-      <p>{description}</p>
-      {action ? <div className="empty-state-actions">{action}</div> : null}
-    </div>
-  );
-}
 
 function PrivateRoute({ children }: { children: ReactNode }) {
   const auth = useAuth();
@@ -305,305 +221,6 @@ function AdminProductImage({
         </div>
       )}
     </div>
-  );
-}
-
-function UserIcon() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M12 12.75a4.88 4.88 0 1 0-4.87-4.88A4.88 4.88 0 0 0 12 12.75Zm0 2.25c-4.38 0-7.94 2.46-7.94 5.5a.75.75 0 0 0 .75.75h14.38a.75.75 0 0 0 .75-.75c0-3.04-3.56-5.5-7.94-5.5Z" />
-    </svg>
-  );
-}
-
-function CartIcon() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M8.25 20.25a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3Zm8.25 0a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3Zm-11-13.5h14.17a.75.75 0 0 1 .73.93l-1.44 6a.75.75 0 0 1-.73.57H8.13a.75.75 0 0 1-.73-.57L5.1 4.5H3.75a.75.75 0 0 1 0-1.5h1.94a.75.75 0 0 1 .73.57l.67 2.68Z" />
-    </svg>
-  );
-}
-
-function SiteHeader() {
-  const auth = useAuth();
-  const location = useLocation();
-  const navigate = useNavigate();
-  const userLabel = auth.user?.email?.split('@')[0] ?? 'cliente';
-  const [searchValue, setSearchValue] = useState('');
-  const [accountMenuOpen, setAccountMenuOpen] = useState(false);
-
-  useEffect(() => {
-    const params = new URLSearchParams(location.search);
-    setSearchValue(params.get('q') ?? '');
-  }, [location.search]);
-
-  useEffect(() => {
-    setAccountMenuOpen(false);
-  }, [location.pathname, location.search]);
-
-  function handleSearchSubmit(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-
-    const params = new URLSearchParams(location.search);
-    const trimmedSearch = searchValue.trim();
-
-    if (trimmedSearch) {
-      params.set('q', trimmedSearch);
-    } else {
-      params.delete('q');
-    }
-
-    const nextQuery = params.toString();
-    const basePath = location.pathname.startsWith('/category/') ? location.pathname : '/';
-    navigate(`${basePath}${nextQuery ? `?${nextQuery}` : ''}#catalogo`);
-  }
-
-  return (
-    <header className="site-header">
-      <div className="brand-block">
-        <p className="brand-kicker">{SITE.brandKicker}</p>
-        <Link to="/" className="brand-mark">
-          {SITE.name}
-        </Link>
-        <p className="brand-subtitle">{SITE.brandSubtitle}</p>
-      </div>
-
-      <form className="search-panel" onSubmit={handleSearchSubmit}>
-        <label className="search-label" htmlFor="site-search">
-          Buscar productos
-        </label>
-        <div className="search-row">
-          <input
-            id="site-search"
-            className="search-input"
-            type="search"
-            placeholder={SITE.searchPlaceholder}
-            value={searchValue}
-            onChange={(event) => setSearchValue(event.target.value)}
-          />
-          <button className="search-button" type="submit">
-            Buscar
-          </button>
-        </div>
-      </form>
-
-      <div className="header-tools" aria-label="Accesos de usuario y carrito">
-        {auth.user ? (
-          <div className="header-account-shell">
-            <button
-              type="button"
-              className="header-account-button"
-              aria-haspopup="menu"
-              aria-expanded={accountMenuOpen}
-              onClick={() => setAccountMenuOpen((current) => !current)}
-              title={`Sesion iniciada como ${auth.user.email}`}
-            >
-              <span className="header-account-icon">
-                <UserIcon />
-              </span>
-              <span className="header-account-copy">
-                <span className="header-session-label">Sesion activa</span>
-                <strong>{userLabel}</strong>
-              </span>
-            </button>
-
-            {accountMenuOpen && (
-              <div className="header-account-menu" role="menu" aria-label="Menu de cuenta">
-                <Link to="/account" className="header-account-link" role="menuitem">
-                  Mi cuenta
-                </Link>
-                <Link to="/orders" className="header-account-link" role="menuitem">
-                  Mis ordenes
-                </Link>
-                {auth.user.role === 'admin' && (
-                  <Link to="/admin" className="header-account-link" role="menuitem">
-                    Panel admin
-                  </Link>
-                )}
-                <button
-                  type="button"
-                  className="header-account-action"
-                  role="menuitem"
-                  onClick={() => {
-                    auth.logout();
-                    setAccountMenuOpen(false);
-                  }}
-                >
-                  Cerrar sesion
-                </button>
-              </div>
-            )}
-          </div>
-        ) : (
-          <>
-            <div className="header-guest-chip" aria-label="Compra como invitado">
-              <span className="header-account-icon">
-                <UserIcon />
-              </span>
-              <span className="header-account-copy">
-                <span className="header-session-label">Invitado</span>
-                <strong>Explora la tienda</strong>
-              </span>
-            </div>
-            <Link to="/login" className="header-login-link" aria-label="Ir a iniciar sesion">
-              Iniciar sesion
-            </Link>
-          </>
-        )}
-        <Link to="/cart" className="header-icon-link" aria-label="Ir al carrito">
-          <CartIcon />
-          {auth.cartCount > 0 && <span className="header-cart-count">{auth.cartCount}</span>}
-        </Link>
-      </div>
-    </header>
-  );
-}
-
-function SiteFooter() {
-  return (
-    <footer className="site-footer">
-      <div className="footer-block">
-        <strong>{SITE.name}</strong>
-        <span>{SITE.footer.description}</span>
-        <span>{SITE.footer.tagline}</span>
-      </div>
-      <div className="footer-block">
-        <strong>Contacto</strong>
-        <a href={BUSINESS.contact.whatsappUrl} target="_blank" rel="noreferrer">
-          WhatsApp: {BUSINESS.contact.whatsappDisplay}
-        </a>
-        <a href={BUSINESS.contact.instagramUrl} target="_blank" rel="noreferrer">
-          Instagram: @{BUSINESS.contact.instagram}
-        </a>
-        <a href={`mailto:${BUSINESS.contact.email}`}>Correo: {BUSINESS.contact.email}</a>
-      </div>
-      <div className="footer-block">
-        <strong>Tienda</strong>
-        <span>{SITE.footer.storeNote1}</span>
-        <span>{SITE.footer.storeNote2}</span>
-      </div>
-    </footer>
-  );
-}
-
-function CategoryMenu({
-  menuCategories,
-  activeCategorySlug,
-}: {
-  menuCategories: ReadonlyArray<
-    Pick<Category, 'name' | 'slug'> | (typeof STORE_CATEGORY_PRESETS)[number]
-  >;
-  activeCategorySlug?: string | null;
-}) {
-  return (
-    <nav className="category-nav category-nav-home" aria-label="Categorias principales">
-      <Link
-        to="/#catalogo"
-        className={!activeCategorySlug ? 'category-link category-link-active' : 'category-link'}
-      >
-        TODAS
-      </Link>
-      {menuCategories.map((category) => (
-        <Link
-          key={category.slug}
-          to={`/category/${category.slug}#catalogo`}
-          className={
-            activeCategorySlug === category.slug
-              ? 'category-link category-link-active'
-              : 'category-link'
-          }
-        >
-          {getCategoryDisplayName(category).toUpperCase()}
-        </Link>
-      ))}
-    </nav>
-  );
-}
-
-function GlobalCategoryNav({ activeCategorySlug }: { activeCategorySlug?: string | null }) {
-  return (
-    <CategoryMenu
-      menuCategories={STORE_CATEGORY_PRESETS}
-      activeCategorySlug={activeCategorySlug}
-    />
-  );
-}
-
-function StorefrontSidebar({
-  menuCategories,
-  activeCategory,
-}: {
-  menuCategories: ReadonlyArray<
-    Pick<Category, 'name' | 'slug' | 'description'> | (typeof STORE_CATEGORY_PRESETS)[number]
-  >;
-  activeCategory?: Pick<Category, 'name' | 'slug' | 'description'> | null;
-}) {
-  const auth = useAuth();
-  const featuredLabel = activeCategory ? getCategoryDisplayName(activeCategory) : SITE.name;
-  const featuredDescription =
-    ('id' in (activeCategory ?? {}) && activeCategory
-      ? getCategoryDescription(activeCategory as Category)
-      : activeCategory?.description) ??
-    'Explora productos seleccionados y novedades del catalogo.';
-
-  return (
-    <aside className="sidebar-column">
-      {!auth.user && (
-        <section className="sidebar-box login-box">
-          <header className="sidebar-heading">Acceso clientes</header>
-          <label className="sidebar-label" htmlFor="login-email">
-            Email
-          </label>
-          <input
-            id="login-email"
-            className="sidebar-input"
-            type="email"
-            placeholder="usuario@correo.com"
-          />
-          <label className="sidebar-label" htmlFor="login-password">
-            Clave
-          </label>
-          <input
-            id="login-password"
-            className="sidebar-input"
-            type="password"
-            placeholder="********"
-          />
-          <Link to="/login" className="sidebar-button sidebar-button-link">
-            Entrar a mi cuenta
-          </Link>
-          <p className="sidebar-help">Ingresa para revisar carrito, compras y pedidos.</p>
-        </section>
-      )}
-
-      <section className="sidebar-box promo-box">
-        <header className="sidebar-heading">Categorias visibles</header>
-        <ul className="promo-list">
-          {menuCategories.slice(0, 7).map((category) => (
-            <li key={category.slug} id={`category-${category.slug}`}>
-              <Link to={`/category/${category.slug}`}>
-                <strong>{getCategoryDisplayName(category)}</strong>
-                <span>{'id' in category ? getCategoryDescription(category as Category) : category.description}</span>
-              </Link>
-            </li>
-          ))}
-        </ul>
-      </section>
-
-      <section className="sidebar-box banner-box">
-        <span className="promo-ribbon">Categoria destacada</span>
-        <strong>{featuredLabel}</strong>
-        <p>{featuredDescription}</p>
-      </section>
-
-      <section className="sidebar-box banner-box banner-box-secondary">
-        <span className="promo-ribbon">Compra segura</span>
-        <strong>Catalogo siempre actualizado</strong>
-        <p>
-          Tu menu, productos, carrito y ordenes quedan listos para trabajar con contenido real.
-        </p>
-      </section>
-    </aside>
   );
 }
 
