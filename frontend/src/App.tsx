@@ -33,6 +33,12 @@ import {
   getPaymentMethodLabel,
   buildOrderWhatsAppMessage,
 } from './lib/orders';
+import {
+  createEmptyProductForm,
+  createSpecificationRows,
+  normalizeSpecificationsInput,
+  getStockBadge,
+} from './lib/product-form';
 import { normalizeProduct, normalizeCart } from './lib/normalize';
 import {
   notifyStorefrontRefresh,
@@ -101,62 +107,6 @@ const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 
 
 
-function createEmptyProductForm(): ProductFormState {
-  return {
-    title: '',
-    slug: '',
-    description: '',
-    price: '',
-    stock: '',
-    imageUrl: '',
-    categoryId: '',
-    isVisible: true,
-    featured: false,
-    specifications: [{ label: '', value: '' }],
-  };
-}
-
-
-function createSpecificationRows(specifications?: Array<{ label: string; value: string }>) {
-  const rows = (specifications ?? [])
-    .map((specification) => ({
-      label: specification.label ?? '',
-      value: specification.value ?? '',
-    }))
-    .filter((specification) => specification.label || specification.value);
-
-  return rows.length > 0 ? rows : [{ label: '', value: '' }];
-}
-
-function normalizeSpecificationsInput(specifications: ProductSpecificationFormState[]) {
-  return specifications
-    .map((specification) => ({
-      label: specification.label.trim(),
-      value: specification.value.trim(),
-    }))
-    .filter((specification) => specification.label || specification.value);
-}
-
-function getStockBadge(stock: number) {
-  if (stock <= 0) {
-    return {
-      className: 'admin-stock-badge admin-stock-badge-empty',
-      label: 'Sin stock',
-    };
-  }
-
-  if (stock <= 5) {
-    return {
-      className: 'admin-stock-badge admin-stock-badge-low',
-      label: 'Stock bajo',
-    };
-  }
-
-  return {
-    className: 'admin-stock-badge',
-    label: 'Stock OK',
-  };
-}
 
 
 function useStorefrontData() {
