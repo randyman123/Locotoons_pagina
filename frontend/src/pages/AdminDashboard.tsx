@@ -1,0 +1,1657 @@
+import { useState, useEffect, type FormEvent } from 'react';
+import axios from 'axios';
+import type { Category, Product, Order, ProductSpecificationFormState, ProductFormState } from '../types';
+import { api } from '../lib/api';
+import { formatPrice } from '../lib/price';
+import { normalizeCategoryValue, buildSlug } from '../lib/strings';
+import { normalizeProduct } from '../lib/normalize';
+import { notifyStorefrontRefresh } from '../lib/storage';
+import { getCategoryDisplayName, sortStoreCategories } from '../lib/categories';
+import { getOrderStatusLabel, getOrderCustomerName, getOrderCustomerEmail, getOrderCustomerTypeLabel, getPaymentMethodLabel } from '../lib/orders';
+import { createEmptyProductForm, createSpecificationRows, normalizeSpecificationsInput, getStockBadge } from '../lib/product-form';
+import { SITE } from '../config/site.config';
+import { BUSINESS } from '../config/business.config';
+import { LoadingState } from '../components/ui/LoadingState';
+import { EmptyState } from '../components/ui/EmptyState';
+import { SiteHeader } from '../components/layout/SiteHeader';
+import { SiteFooter } from '../components/layout/SiteFooter';
+import { AdminProductImage } from '../components/admin/AdminProductImage';
+
+type AdminProduct = Product & {
+  isVisible: boolean;
+};
+
+type ProductSortOption = 'newest' | 'oldest' | 'price_desc' | 'price_asc' | 'low_stock';
+
+const ADMIN_ORDER_STATUSES = ['pending', 'paid', 'shipped', 'delivered', 'cancelled'] as const;
+const SPECIFICATION_LABEL_PLACEHOLDERS = SITE.specificationLabelPlaceholders;
+
+export function AdminDashboard() {
+  const [activeSection, setActiveSection] = useState<'overview' | 'products' | 'orders'>('overview');
+  const [categories, setCategories] = useState<Category[]>([]);
+  const [products, setProducts] = useState<AdminProduct[]>([]);
+  const [orders, setOrders] = useState<Order[]>([]);
+  const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
+  const [productForm, setProductForm] = useState<ProductFormState>(createEmptyProductForm());
+  const [categoriesLoading, setCategoriesLoading] = useState(true);
+  const [productsLoading, setProductsLoading] = useState(true);
+  const [ordersLoading, setOrdersLoading] = useState(true);
+  const [productSubmitting, setProductSubmitting] = useState(false);
+  const [productBusyId, setProductBusyId] = useState<number | null>(null);
+  const [orderBusyId, setOrderBusyId] = useState<number | null>(null);
+  const [productMessage, setProductMessage] = useState<string | null>(null);
+  const [orderMessage, setOrderMessage] = useState<string | null>(null);
+  const [categoryError, setCategoryError] = useState<string | null>(null);
+  const [productError, setProductError] = useState<string | null>(null);
+  const [orderError, setOrderError] = useState<string | null>(null);
+  const [productSearch, setProductSearch] = useState('');
+  const [productCategoryFilter, setProductCategoryFilter] = useState('all');
+  const [productVisibilityFilter, setProductVisibilityFilter] = useState<'all' | 'visible' | 'hidden'>('all');
+  const [productStockFilter, setProductStockFilter] = useState<'all' | 'low' | 'out'>('all');
+  const [productFeaturedFilter, setProductFeaturedFilter] = useState<'all' | 'featured' | 'normal'>('all');
+  const [productSortOption, setProductSortOption] = useState<ProductSortOption>('newest');
+  const [groupProductsByCategory, setGroupProductsByCategory] = useState(true);
+  const [productImagePreviewFailed, setProductImagePreviewFailed] = useState(false);
+
+  async function loadAdminCategories() {
+    try {
+      setCategoriesLoading(true);
+      setCategoryError(null);
+
+      const response = await api.get<Category[]>('/categories');
+      setCategories(sortStoreCategories(response.data));
+    } catch (requestError) {
+      setCategories([]);
+
+      if (axios.isAxiosError(requestError)) {
+        setCategoryError(
+          (requestError.response?.data as { message?: string } | undefined)?.message ??
+            'No pudimos cargar las categorias para el formulario de producto.',
+        );
+      } else {
+        setCategoryError('No pudimos cargar las categorias para el formulario de producto.');
+      }
+    } finally {
+      setCategoriesLoading(false);
+    }
+  }
+
+  async function loadAdminProducts() {
+    try {
+      setProductsLoading(true);
+      setProductError(null);
+
+      const productsResponse = await api.get<AdminProduct[]>('/products/admin/all');
+      setProducts(productsResponse.data.map((product) => normalizeProduct(product) as AdminProduct));
+    } catch (requestError) {
+      if (axios.isAxiosError(requestError)) {
+        setProductError(
+          (requestError.response?.data as { message?: string } | undefined)?.message ??
+            'No pudimos cargar los productos del panel admin.',
+        );
+      } else {
+        setProductError('No pudimos cargar los productos del panel admin.');
+      }
+    } finally {
+      setProductsLoading(false);
+    }
+  }
+
+  async function loadAdminOrders(preserveSelected = true) {
+    try {
+      setOrdersLoading(true);
+      setOrderError(null);
+
+      const response = await api.get<Order[]>('/orders');
+      setOrders(response.data);
+
+      if (preserveSelected && selectedOrder) {
+        const refreshedOrder =
+          response.data.find((order) => order.id === selectedOrder.id) ?? null;
+        setSelectedOrder(refreshedOrder);
+      }
+    } catch (requestError) {
+      if (axios.isAxiosError(requestError)) {
+        setOrderError(
+          (requestError.response?.data as { message?: string } | undefined)?.message ??
+            'No pudimos cargar las ordenes del panel admin.',
+        );
+      } else {
+        setOrderError('No pudimos cargar las ordenes del panel admin.');
+      }
+    } finally {
+      setOrdersLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    void loadAdminCategories();
+    void loadAdminProducts();
+    void loadAdminOrders(false);
+  }, []);
+
+  const visibleProducts = products.filter((product) => product.isVisible !== false);
+  const hiddenProducts = products.filter((product) => product.isVisible === false);
+  const featuredProducts = visibleProducts.filter((product) => product.featured === true);
+  const lowStockProducts = visibleProducts.filter(
+    (product) => product.stock > 0 && product.stock <= 5,
+  );
+  const pendingOrders = orders.filter((order) => order.status === 'pending');
+  const normalizedProductSearch = normalizeCategoryValue(productSearch);
+  const filteredProducts = products.filter((product) => {
+    const matchesSearch = normalizedProductSearch
+      ? [
+          product.title,
+          product.slug,
+          product.description,
+          product.category?.name ?? '',
+          product.category?.slug ?? '',
+          ...(product.specifications ?? []).flatMap((specification) => [
+            specification.label,
+            specification.value,
+          ]),
+        ]
+          .join(' ')
+          .toLowerCase()
+          .includes(normalizedProductSearch)
+      : true;
+    const matchesCategory =
+      productCategoryFilter === 'all'
+        ? true
+        : String(product.category?.id ?? '') === productCategoryFilter;
+    const matchesVisibility =
+      productVisibilityFilter === 'all'
+        ? true
+        : productVisibilityFilter === 'visible'
+          ? product.isVisible !== false
+          : product.isVisible === false;
+    const matchesStock =
+      productStockFilter === 'all'
+        ? true
+        : productStockFilter === 'low'
+          ? product.stock > 0 && product.stock <= 5
+          : product.stock <= 0;
+    const matchesFeatured =
+      productFeaturedFilter === 'all'
+        ? true
+        : productFeaturedFilter === 'featured'
+          ? product.featured === true
+          : product.featured !== true;
+
+    return matchesSearch && matchesCategory && matchesVisibility && matchesStock && matchesFeatured;
+  });
+  const orderedFilteredProducts = [...filteredProducts].sort((left, right) => {
+    if (productSortOption === 'newest' || productSortOption === 'oldest') {
+      const leftTime = new Date(left.createdAt ?? '').getTime() || 0;
+      const rightTime = new Date(right.createdAt ?? '').getTime() || 0;
+      return productSortOption === 'newest' ? rightTime - leftTime : leftTime - rightTime;
+    }
+
+    if (productSortOption === 'price_desc') {
+      return Number(right.price) - Number(left.price);
+    }
+
+    if (productSortOption === 'price_asc') {
+      return Number(left.price) - Number(right.price);
+    }
+
+    if (productSortOption === 'low_stock') {
+      return left.stock - right.stock;
+    }
+
+    const leftCategory = getCategoryDisplayName(left.category);
+    const rightCategory = getCategoryDisplayName(right.category);
+    const categoryComparison = leftCategory.localeCompare(rightCategory, 'es');
+
+    if (categoryComparison !== 0) {
+      return categoryComparison;
+    }
+
+    return left.title.localeCompare(right.title, 'es');
+  });
+  const groupedProducts = categories
+    .map((category) => ({
+      category,
+      products: orderedFilteredProducts.filter((product) => product.category?.id === category.id),
+    }))
+    .filter((group) => group.products.length > 0);
+  const uncategorizedProducts = orderedFilteredProducts.filter((product) => !product.category?.id);
+  const selectedProductCategory = categories.find(
+    (category) => String(category.id) === productForm.categoryId,
+  );
+  const isDirectImageUrl = /\.(jpe?g|png|webp)(\?.*)?$/i.test(productForm.imageUrl.trim());
+  const productFormStock = Number(productForm.stock);
+  const productFormStockBadge = getStockBadge(Number.isNaN(productFormStock) ? 0 : productFormStock);
+
+  function resetProductForm() {
+    setProductForm(createEmptyProductForm());
+    setProductImagePreviewFailed(false);
+  }
+
+  function openCreateProductForm() {
+    resetProductForm();
+    setProductMessage(null);
+    setProductError(null);
+    setActiveSection('products');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  function handleProductFormChange<K extends keyof ProductFormState>(
+    key: K,
+    value: ProductFormState[K],
+  ) {
+    setProductForm((current) => {
+      if (key === 'title') {
+        const nextTitle = String(value);
+        const shouldRefreshSlug = !current.slug || current.slug === buildSlug(current.title);
+
+        return {
+          ...current,
+          title: nextTitle,
+          slug: shouldRefreshSlug ? buildSlug(nextTitle) : current.slug,
+        };
+      }
+
+      if (key === 'slug') {
+        return {
+          ...current,
+          slug: buildSlug(String(value)),
+        };
+      }
+
+      if (key === 'imageUrl') {
+        setProductImagePreviewFailed(false);
+      }
+
+      return {
+        ...current,
+        [key]: value,
+      };
+    });
+  }
+
+  function handleSpecificationChange(
+    index: number,
+    key: keyof ProductSpecificationFormState,
+    value: string,
+  ) {
+    setProductForm((current) => ({
+      ...current,
+      specifications: current.specifications.map((specification, specificationIndex) =>
+        specificationIndex === index
+          ? {
+              ...specification,
+              [key]: value,
+            }
+          : specification,
+      ),
+    }));
+  }
+
+  function addSpecificationRow() {
+    setProductForm((current) => ({
+      ...current,
+      specifications: [...current.specifications, { label: '', value: '' }],
+    }));
+  }
+
+  function removeSpecificationRow(index: number) {
+    setProductForm((current) => {
+      const nextSpecifications = current.specifications.filter(
+        (_, specificationIndex) => specificationIndex !== index,
+      );
+
+      return {
+        ...current,
+        specifications:
+          nextSpecifications.length > 0 ? nextSpecifications : [{ label: '', value: '' }],
+      };
+    });
+  }
+
+  function startEditingProduct(product: AdminProduct) {
+    setProductMessage(null);
+    setProductError(null);
+    setProductImagePreviewFailed(false);
+    setProductForm({
+      id: product.id,
+      title: product.title,
+      slug: product.slug,
+      description: product.description,
+      price: String(product.price),
+      stock: String(product.stock),
+      imageUrl: product.imageUrl ?? '',
+      categoryId: product.category?.id ? String(product.category.id) : '',
+      isVisible: product.isVisible !== false,
+      featured: product.featured === true,
+      specifications: createSpecificationRows(product.specifications),
+    });
+    setActiveSection('products');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  async function handleProductSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    const specifications = normalizeSpecificationsInput(productForm.specifications);
+    const hasIncompleteSpecification = specifications.some(
+      (specification) => !specification.label || !specification.value,
+    );
+
+    const payload = {
+      title: productForm.title.trim(),
+      slug: buildSlug(productForm.slug || productForm.title),
+      description: productForm.description.trim(),
+      price: Number(productForm.price),
+      stock: Number(productForm.stock),
+      imageUrl: productForm.imageUrl.trim() || undefined,
+      categoryId: Number(productForm.categoryId),
+      isVisible: productForm.isVisible,
+      featured: productForm.featured,
+      specifications,
+    };
+
+    if (!payload.title) {
+      setProductError('Agrega un titulo para el producto.');
+      setProductMessage(null);
+      return;
+    }
+
+    if (!payload.slug) {
+      setProductError('El slug no puede quedar vacio. Escribe un titulo o ajusta el slug manualmente.');
+      setProductMessage(null);
+      return;
+    }
+
+    if (!payload.description) {
+      setProductError('Agrega una descripcion breve para el producto.');
+      setProductMessage(null);
+      return;
+    }
+
+    if (!productForm.categoryId) {
+      setProductError('Selecciona una categoria para ubicar el producto en la tienda.');
+      setProductMessage(null);
+      return;
+    }
+
+    if (Number.isNaN(payload.price) || payload.price < 0 || !Number.isInteger(payload.price)) {
+      setProductError('Ingresa un precio CLP valido, sin decimales y mayor o igual a 0.');
+      setProductMessage(null);
+      return;
+    }
+
+    if (Number.isNaN(payload.stock) || payload.stock < 0 || !Number.isInteger(payload.stock)) {
+      setProductError('Ingresa un stock valido en unidades completas.');
+      setProductMessage(null);
+      return;
+    }
+
+    if (hasIncompleteSpecification) {
+      setProductError('Completa etiqueta y valor en cada specification, o elimina la fila vacia.');
+      setProductMessage(null);
+      return;
+    }
+
+    try {
+      setProductSubmitting(true);
+      setProductError(null);
+      setProductMessage(null);
+
+      if (productForm.id) {
+        await api.patch(`/products/${productForm.id}`, payload);
+        setProductMessage('Producto actualizado correctamente.');
+      } else {
+        await api.post('/products', payload);
+        setProductMessage('Producto creado correctamente.');
+      }
+
+      resetProductForm();
+      await loadAdminProducts();
+      notifyStorefrontRefresh();
+    } catch (requestError) {
+      if (axios.isAxiosError(requestError)) {
+        setProductError(
+          (requestError.response?.data as { message?: string } | undefined)?.message ??
+            'No pudimos guardar el producto.',
+        );
+      } else {
+        setProductError('No pudimos guardar el producto.');
+      }
+    } finally {
+      setProductSubmitting(false);
+    }
+  }
+
+  async function handleToggleVisibility(product: AdminProduct) {
+    const actionLabel = product.isVisible ? 'ocultar' : 'mostrar';
+    const confirmed = window.confirm(
+      `Vas a ${actionLabel} "${product.title}" en la tienda publica. Deseas continuar?`,
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    try {
+      setProductBusyId(product.id);
+      setProductError(null);
+      setProductMessage(null);
+      await api.patch(`/products/${product.id}`, {
+        isVisible: product.isVisible === false,
+      });
+      setProductMessage(
+        product.isVisible === false
+          ? 'Producto visible nuevamente en la tienda.'
+          : 'Producto ocultado del catalogo publico.',
+      );
+      await loadAdminProducts();
+      notifyStorefrontRefresh();
+    } catch (requestError) {
+      if (axios.isAxiosError(requestError)) {
+        setProductError(
+          (requestError.response?.data as { message?: string } | undefined)?.message ??
+            'No pudimos actualizar la visibilidad del producto.',
+        );
+      } else {
+        setProductError('No pudimos actualizar la visibilidad del producto.');
+      }
+    } finally {
+      setProductBusyId(null);
+    }
+  }
+
+  async function handleToggleFeatured(product: AdminProduct) {
+    try {
+      setProductBusyId(product.id);
+      setProductError(null);
+      setProductMessage(null);
+      await api.patch(`/products/${product.id}`, {
+        featured: product.featured !== true,
+      });
+      setProductMessage(
+        product.featured === true
+          ? 'Producto quitado de destacados.'
+          : 'Producto marcado como destacado.',
+      );
+      await loadAdminProducts();
+      notifyStorefrontRefresh();
+    } catch (requestError) {
+      if (axios.isAxiosError(requestError)) {
+        setProductError(
+          (requestError.response?.data as { message?: string } | undefined)?.message ??
+            'No pudimos actualizar el destacado del producto.',
+        );
+      } else {
+        setProductError('No pudimos actualizar el destacado del producto.');
+      }
+    } finally {
+      setProductBusyId(null);
+    }
+  }
+
+  async function handleCleanDemoProducts() {
+    const confirmed = window.confirm(
+      'Vas a ocultar productos demo o no reales para empezar con catalogo limpio. No se borraran ordenes historicas ni productos de ordenes/carritos. Deseas continuar?',
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    try {
+      setProductSubmitting(true);
+      setProductError(null);
+      setProductMessage(null);
+
+      const response = await api.post<{
+        summary: {
+          hidden: Array<{ id: number }>;
+          deleted?: Array<{ id: number }>;
+          kept?: Array<{ id: number }>;
+        };
+      }>('/products/clean-test-data');
+      const hiddenCount = response.data.summary.hidden.length;
+      const deletedCount = response.data.summary.deleted?.length ?? 0;
+      const keptCount = response.data.summary.kept?.length ?? 0;
+
+      setProductMessage(
+        `Limpieza demo completada: ${hiddenCount} ocultado(s), ${deletedCount} eliminado(s), ${keptCount} omitido(s). Las ordenes historicas se mantienen.`,
+      );
+      await loadAdminProducts();
+      notifyStorefrontRefresh();
+      setActiveSection('products');
+    } catch (requestError) {
+      if (axios.isAxiosError(requestError)) {
+        setProductError(
+          (requestError.response?.data as { message?: string } | undefined)?.message ??
+            'No pudimos limpiar los productos demo.',
+        );
+      } else {
+        setProductError('No pudimos limpiar los productos demo.');
+      }
+    } finally {
+      setProductSubmitting(false);
+    }
+  }
+
+  async function handleDeleteProduct(product: AdminProduct) {
+    const confirmed = window.confirm(
+      `Vas a intentar eliminar "${product.title}". Si tiene carritos u ordenes asociadas, se ocultara en lugar de borrarse. Deseas continuar?`,
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    try {
+      setProductBusyId(product.id);
+      setProductError(null);
+      setProductMessage(null);
+      const response = await api.delete<{
+        deleted: boolean;
+        hidden?: boolean;
+        message?: string;
+      }>(`/products/${product.id}`);
+      setProductMessage(
+        response.data.hidden
+          ? response.data.message ??
+              'El producto tenia relaciones y fue ocultado del catalogo publico.'
+          : 'Producto eliminado correctamente del catalogo admin.',
+      );
+      await loadAdminProducts();
+      notifyStorefrontRefresh();
+    } catch (requestError) {
+      if (axios.isAxiosError(requestError) && requestError.response?.status === 409) {
+        try {
+          await api.patch(`/products/${product.id}`, {
+            isVisible: false,
+          });
+          setProductMessage(
+            'El producto tenia relaciones activas y no se pudo borrar. Lo ocultamos del catalogo publico para proteger las ordenes existentes.',
+          );
+          await loadAdminProducts();
+          notifyStorefrontRefresh();
+          return;
+        } catch {
+          setProductError(
+            'No se pudo eliminar el producto y tampoco fue posible ocultarlo automaticamente.',
+          );
+          return;
+        }
+      }
+
+      if (axios.isAxiosError(requestError)) {
+        setProductError(
+          (requestError.response?.data as { message?: string } | undefined)?.message ??
+            'No pudimos eliminar el producto.',
+        );
+      } else {
+        setProductError('No pudimos eliminar el producto.');
+      }
+    } finally {
+      setProductBusyId(null);
+    }
+  }
+
+  async function handleSelectOrder(orderId: number) {
+    if (selectedOrder?.id === orderId) {
+      setSelectedOrder(null);
+      return;
+    }
+
+    try {
+      setOrderBusyId(orderId);
+      setOrderError(null);
+
+      const response = await api.get<Order>(`/orders/${orderId}`);
+      setSelectedOrder(response.data);
+    } catch (requestError) {
+      if (axios.isAxiosError(requestError)) {
+        setOrderError(
+          (requestError.response?.data as { message?: string } | undefined)?.message ??
+            'No pudimos cargar el detalle de la orden.',
+        );
+      } else {
+        setOrderError('No pudimos cargar el detalle de la orden.');
+      }
+    } finally {
+      setOrderBusyId(null);
+    }
+  }
+
+  async function handleStatusChange(orderId: number, status: string) {
+    try {
+      setOrderBusyId(orderId);
+      setOrderError(null);
+      setOrderMessage(null);
+
+      const response = await api.patch<Order>(`/orders/${orderId}/status`, { status });
+      const updatedOrder = response.data;
+
+      setOrders((current) =>
+        current.map((order) => (order.id === orderId ? updatedOrder : order)),
+      );
+      setSelectedOrder((current) => (current?.id === orderId ? updatedOrder : current));
+      setOrderMessage(`Estado actualizado a ${getOrderStatusLabel(updatedOrder.status)}.`);
+    } catch (requestError) {
+      if (axios.isAxiosError(requestError)) {
+        setOrderError(
+          (requestError.response?.data as { message?: string } | undefined)?.message ??
+            'No pudimos actualizar el estado de la orden.',
+        );
+      } else {
+        setOrderError('No pudimos actualizar el estado de la orden.');
+      }
+    } finally {
+      setOrderBusyId(null);
+    }
+  }
+
+  function renderProductRow(product: AdminProduct) {
+    const categoryName = getCategoryDisplayName(product.category);
+    const stockBadge = getStockBadge(product.stock);
+
+    return (
+      <article key={product.id} className="admin-product-row">
+        <div className="admin-product-media">
+          <AdminProductImage
+            compact
+            imageUrl={product.imageUrl}
+            title={product.title}
+            categoryName={categoryName}
+          />
+        </div>
+        <div className="admin-product-copy">
+          <div className="admin-product-topline">
+            <span className="order-label">#{product.id}</span>
+            <span className="admin-product-slug">/{product.slug}</span>
+          </div>
+          <h3>{product.title}</h3>
+          <p>{product.description}</p>
+          {product.specifications && product.specifications.length > 0 && (
+            <span className="admin-product-specs-preview">
+              {product.specifications
+                .slice(0, 2)
+                .map((specification) => `${specification.label}: ${specification.value}`)
+                .join(' | ')}
+            </span>
+          )}
+        </div>
+        <div className="admin-product-meta-cell admin-product-info-stack" data-label="Datos">
+          <span className="admin-category-pill">{categoryName}</span>
+          <strong>{formatPrice(product.price)}</strong>
+          <span className={stockBadge.className}>{product.stock} | {stockBadge.label}</span>
+        </div>
+        <div className="admin-product-meta-cell admin-product-status-stack" data-label="Estados">
+          {product.featured ? (
+            <span className="admin-featured-badge">Destacado</span>
+          ) : (
+            <span className="admin-muted-badge">Normal</span>
+          )}
+        </div>
+        <div className="admin-product-meta-cell" data-label="Estado">
+          <span
+            className={
+              product.isVisible
+                ? 'admin-visibility-badge'
+                : 'admin-visibility-badge admin-visibility-badge-hidden'
+            }
+          >
+            {product.isVisible ? 'Visible' : 'Oculto'}
+          </span>
+        </div>
+        <div className="admin-product-actions" data-label="Acciones">
+          <button
+            type="button"
+            className="product-detail-secondary-button admin-product-action-button"
+            onClick={() => startEditingProduct(product)}
+            disabled={productBusyId === product.id}
+          >
+            Editar
+          </button>
+          <button
+            type="button"
+            className="product-detail-secondary-button admin-product-action-button"
+            onClick={() => void handleToggleVisibility(product)}
+            disabled={productBusyId === product.id}
+          >
+            {productBusyId === product.id ? 'Guardando...' : product.isVisible ? 'Ocultar' : 'Mostrar'}
+          </button>
+          <button
+            type="button"
+            className="product-detail-secondary-button admin-product-action-button"
+            onClick={() => void handleToggleFeatured(product)}
+            disabled={productBusyId === product.id}
+          >
+            {product.featured ? 'Quitar destacado' : 'Destacar'}
+          </button>
+          <button
+            type="button"
+            className="product-detail-secondary-button admin-product-action-button admin-danger-button"
+            onClick={() => void handleDeleteProduct(product)}
+            disabled={productBusyId === product.id}
+          >
+            Eliminar
+          </button>
+        </div>
+      </article>
+    );
+  }
+
+  return (
+    <div className="store-shell">
+      <div className="top-strip" />
+      <SiteHeader />
+
+      <main className="page-main">
+        <section className="account-layout admin-layout">
+          <aside className="account-sidebar">
+            <div className="account-sidebar-card admin-sidebar-card">
+              <span className="hero-tag">Admin</span>
+              <h2>Panel {SITE.name}</h2>
+              <p>
+                Gestiona productos, visibilidad del catalogo y estados de orden sin salir del
+                sitio.
+              </p>
+              <div className="account-sidebar-actions">
+                <button
+                  type="button"
+                  className={
+                    activeSection === 'overview' ? 'account-tab account-tab-active' : 'account-tab'
+                  }
+                  onClick={() => setActiveSection('overview')}
+                >
+                  Resumen
+                </button>
+                <button
+                  type="button"
+                  className={
+                    activeSection === 'products' ? 'account-tab account-tab-active' : 'account-tab'
+                  }
+                  onClick={() => setActiveSection('products')}
+                >
+                  Productos
+                </button>
+                <button
+                  type="button"
+                  className={
+                    activeSection === 'orders' ? 'account-tab account-tab-active' : 'account-tab'
+                  }
+                  onClick={() => setActiveSection('orders')}
+                >
+                  Ordenes
+                </button>
+              </div>
+            </div>
+          </aside>
+
+          <div className="account-content">
+            {activeSection === 'overview' && (
+              <section className="orders-layout">
+                <header className="section-heading">
+                  <h2>Resumen de la tienda</h2>
+                  <span>Vista general del catalogo y del flujo comercial actual de {SITE.name}.</span>
+                </header>
+
+                <div className="admin-summary-grid">
+                  <article className="admin-summary-card">
+                    <span className="order-label">Total productos</span>
+                    <strong>{products.length}</strong>
+                    <p>Productos registrados en el panel.</p>
+                  </article>
+                  <article className="admin-summary-card">
+                    <span className="order-label">Productos visibles</span>
+                    <strong>{visibleProducts.length}</strong>
+                    <p>Actualmente publicados en la tienda.</p>
+                  </article>
+                  <article className="admin-summary-card">
+                    <span className="order-label">Productos ocultos</span>
+                    <strong>{hiddenProducts.length}</strong>
+                    <p>Ocultos del catalogo publico.</p>
+                  </article>
+                  <article className="admin-summary-card">
+                    <span className="order-label">Ordenes pendientes</span>
+                    <strong>{pendingOrders.length}</strong>
+                    <p>Compras que aun necesitan gestion.</p>
+                  </article>
+                  <article className="admin-summary-card">
+                    <span className="order-label">Stock bajo</span>
+                    <strong>{lowStockProducts.length}</strong>
+                    <p>Productos visibles con stock entre 1 y 5 unidades.</p>
+                  </article>
+                  <article className="admin-summary-card">
+                    <span className="order-label">Destacados</span>
+                    <strong>{featuredProducts.length}</strong>
+                    <p>Productos visibles priorizados en la home.</p>
+                  </article>
+                </div>
+
+                <div className="admin-overview-layout">
+                  <section className="admin-panel-card">
+                    <div className="admin-panel-card-header">
+                      <div>
+                        <span className="order-label">Accesos rapidos</span>
+                        <h3>Acciones frecuentes</h3>
+                      </div>
+                    </div>
+
+                    <div className="admin-quick-actions">
+                      <button
+                        type="button"
+                        className="product-detail-button"
+                        onClick={openCreateProductForm}
+                      >
+                        Crear producto
+                      </button>
+                      <button
+                        type="button"
+                        className="product-detail-secondary-button"
+                        onClick={() => setActiveSection('orders')}
+                      >
+                        Revisar ordenes pendientes
+                      </button>
+                      <button
+                        type="button"
+                        className="product-detail-secondary-button"
+                        onClick={() => setActiveSection('products')}
+                      >
+                        Ver catalogo admin
+                      </button>
+                      <button
+                        type="button"
+                        className="product-detail-secondary-button admin-danger-button"
+                        onClick={() => void handleCleanDemoProducts()}
+                        disabled={productSubmitting}
+                      >
+                        Ocultar productos demo
+                      </button>
+                      <p className="admin-cleanup-note">
+                        Oculta productos de prueba o no reales detectados de forma conservadora. No borra ordenes historicas ni elimina productos asociados a carritos u ordenes.
+                      </p>
+                    </div>
+                  </section>
+
+                  <section className="admin-panel-card">
+                    <div className="admin-panel-card-header">
+                      <div>
+                        <span className="order-label">Alertas</span>
+                        <h3>Stock bajo</h3>
+                      </div>
+                    </div>
+
+                    {productsLoading ? (
+                      <LoadingState message="Calculando alertas del inventario..." />
+                    ) : lowStockProducts.length > 0 ? (
+                      <div className="admin-inline-list">
+                        {lowStockProducts.slice(0, 6).map((product) => (
+                          <div key={product.id} className="admin-inline-item">
+                            <div>
+                              <strong>{product.title}</strong>
+                              <span>{getCategoryDisplayName(product.category)}</span>
+                            </div>
+                            <span className="admin-inline-emphasis">{product.stock} un.</span>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <EmptyState
+                        compact
+                        tag="Inventario"
+                        title="Sin alertas de stock bajo"
+                        description="Tus productos visibles tienen inventario suficiente por ahora."
+                      />
+                    )}
+                  </section>
+                </div>
+              </section>
+            )}
+
+            {activeSection === 'products' && (
+              <section className="orders-layout">
+                <header className="section-heading">
+                  <h2>Gestion de productos</h2>
+                  <span>Crea, edita y controla que productos quedan visibles en la tienda.</span>
+                </header>
+
+                {productError && <div className="message-box message-box-error">{productError}</div>}
+                {categoryError && <div className="message-box message-box-error">{categoryError}</div>}
+                {productMessage && <div className="message-box auth-success-box">{productMessage}</div>}
+
+                <section className="admin-panel-card">
+                  <div className="admin-panel-card-header">
+                    <div>
+                      <span className="order-label">
+                        {productForm.id ? 'Edicion de producto' : 'Nuevo producto'}
+                      </span>
+                      <h3>{productForm.id ? `Producto #${productForm.id}` : 'Crear producto'}</h3>
+                    </div>
+                    {productForm.id && (
+                      <button
+                        type="button"
+                        className="product-detail-secondary-button"
+                        onClick={resetProductForm}
+                      >
+                        Cancelar edicion
+                      </button>
+                    )}
+                  </div>
+
+                  <form className="admin-product-form" onSubmit={handleProductSubmit}>
+                    <details className="admin-product-guide">
+                      <summary>
+                        <span className="order-label">Guia rapida</span>
+                        <strong>Carga productos reales con datos listos para vender</strong>
+                      </summary>
+                      <div className="admin-guide-grid">
+                        <span>Titulo: nombre comercial claro</span>
+                        <span>Slug: URL corta sin espacios</span>
+                        <span>Descripcion: condicion, version y contenido</span>
+                        <span>Precio: valor final publicado</span>
+                        <span>Stock: unidades disponibles</span>
+                        <span>ImageUrl: imagen publica del producto</span>
+                        <span>Categoria: donde aparecera en la tienda</span>
+                        <span>Specifications: material, altura, serie, escala</span>
+                        <span>Destacado: prioridad en la home</span>
+                      </div>
+                    </details>
+
+                    <div className="admin-form-section-title">
+                      <strong>Informacion basica</strong>
+                      <span>Usa nombres claros y deja que el slug se genere desde el titulo.</span>
+                    </div>
+
+                    <label className="cart-summary-label" htmlFor="admin-product-title">
+                      Titulo
+                    </label>
+                    <input
+                      id="admin-product-title"
+                      className="cart-summary-input"
+                      type="text"
+                      value={productForm.title}
+                      onChange={(event) => handleProductFormChange('title', event.target.value)}
+                      placeholder="Ej: Figura Goku Super Saiyan"
+                    />
+
+                    <label className="cart-summary-label" htmlFor="admin-product-slug">
+                      Slug
+                    </label>
+                    <input
+                      id="admin-product-slug"
+                      className="cart-summary-input"
+                      type="text"
+                      value={productForm.slug}
+                      onChange={(event) => handleProductFormChange('slug', event.target.value)}
+                      placeholder="figura-goku-super-saiyan"
+                    />
+                    <p className="admin-field-help">
+                      Solo letras, numeros y guiones. Puedes editarlo manualmente si necesitas una URL especifica.
+                    </p>
+
+                    <label className="cart-summary-label" htmlFor="admin-product-category">
+                      Categoria
+                    </label>
+                    <select
+                      id="admin-product-category"
+                      className="cart-summary-input"
+                      value={productForm.categoryId}
+                      onChange={(event) =>
+                        handleProductFormChange('categoryId', event.target.value)
+                      }
+                    >
+                      <option value="">
+                        {categoriesLoading
+                          ? 'Cargando categorias...'
+                          : 'Selecciona la categoria del producto'}
+                      </option>
+                      {categories.map((category) => (
+                        <option key={category.id} value={category.id}>
+                          {getCategoryDisplayName(category)}
+                        </option>
+                      ))}
+                    </select>
+                    <div className="admin-current-category">
+                      <span className="order-label">Categoria actual</span>
+                      <span className="admin-category-pill">
+                        {selectedProductCategory
+                          ? getCategoryDisplayName(selectedProductCategory)
+                          : 'Sin categoria seleccionada'}
+                      </span>
+                    </div>
+
+                    <div className="admin-form-section-title">
+                      <strong>Precio e inventario</strong>
+                      <span>Estos datos se ven en el catalogo publico y controlan el checkout.</span>
+                    </div>
+
+                    <label className="cart-summary-label" htmlFor="admin-product-price">
+                      Precio
+                    </label>
+                    <input
+                      id="admin-product-price"
+                      className="cart-summary-input"
+                      type="number"
+                      min="0"
+                      step="1"
+                      inputMode="numeric"
+                      value={productForm.price}
+                      onChange={(event) => handleProductFormChange('price', event.target.value)}
+                      placeholder="Ej: 24990"
+                    />
+                    <p className="admin-field-help">
+                      Precio en pesos chilenos, sin puntos ni decimales. Ej: 24990.
+                    </p>
+
+                    <label className="cart-summary-label" htmlFor="admin-product-stock">
+                      Stock
+                    </label>
+                    <input
+                      id="admin-product-stock"
+                      className="cart-summary-input"
+                      type="number"
+                      min="0"
+                      step="1"
+                      inputMode="numeric"
+                      value={productForm.stock}
+                      onChange={(event) => handleProductFormChange('stock', event.target.value)}
+                      placeholder="Ej: 6"
+                    />
+                    <div className="admin-stock-preview">
+                      <span className={productFormStockBadge.className}>
+                        {productForm.stock.trim() ? productFormStockBadge.label : 'Stock pendiente'}
+                      </span>
+                    </div>
+
+                    <div className="admin-form-section-title">
+                      <strong>Imagen y descripcion</strong>
+                      <span>Pega una imageUrl publica y confirma el resultado en el preview.</span>
+                    </div>
+
+                    <label className="cart-summary-label" htmlFor="admin-product-image">
+                      Image URL
+                    </label>
+                    <input
+                      id="admin-product-image"
+                      className="cart-summary-input"
+                      type="url"
+                      value={productForm.imageUrl}
+                      onChange={(event) => handleProductFormChange('imageUrl', event.target.value)}
+                      placeholder="https://sitio.com/productos/figura.jpg"
+                    />
+                    <p className="admin-field-help">
+                      Usa una URL directa a imagen .jpg, .png o .webp. Si la URL falla, el preview mostrara un aviso y el producto seguira guardable.
+                    </p>
+                    {productForm.imageUrl.trim() && !isDirectImageUrl && (
+                      <div className="message-box message-box-error">
+                        La URL no parece terminar en .jpg, .png o .webp. Puedes guardar igual, pero podria mostrarse un placeholder.
+                      </div>
+                    )}
+                    {productImagePreviewFailed && (
+                      <div className="message-box message-box-error">
+                        No pudimos cargar esa imagen. Puedes guardar igual, pero se mostrara un placeholder hasta usar una URL directa valida.
+                      </div>
+                    )}
+                    <p className="admin-field-help">
+                      Futuro upload: este campo queda preparado para reemplazarse por subida real de archivos mas adelante.
+                    </p>
+
+                    <label className="cart-summary-label" htmlFor="admin-product-description">
+                      Descripcion
+                    </label>
+                    <textarea
+                      id="admin-product-description"
+                      className="cart-summary-textarea"
+                      value={productForm.description}
+                      onChange={(event) =>
+                        handleProductFormChange('description', event.target.value)
+                      }
+                      placeholder="Describe condicion, contenido de la caja, version o detalles importantes."
+                    />
+
+                    <div className="admin-form-section-title">
+                      <strong>Specifications</strong>
+                      <span>Agrega datos comparables como material, altura, serie o escala.</span>
+                    </div>
+
+                    <div className="admin-specifications-editor">
+                      {productForm.specifications.map((specification, index) => (
+                        <div key={`specification-${index}`} className="admin-specification-row">
+                          <input
+                            className="cart-summary-input"
+                            type="text"
+                            value={specification.label}
+                            onChange={(event) =>
+                              handleSpecificationChange(index, 'label', event.target.value)
+                            }
+                            placeholder={SPECIFICATION_LABEL_PLACEHOLDERS[index % SPECIFICATION_LABEL_PLACEHOLDERS.length]}
+                            aria-label={`Etiqueta specification ${index + 1}`}
+                          />
+                          <input
+                            className="cart-summary-input"
+                            type="text"
+                            value={specification.value}
+                            onChange={(event) =>
+                              handleSpecificationChange(index, 'value', event.target.value)
+                            }
+                            placeholder={index === 0 ? 'PVC' : index === 1 ? '18 cm' : 'Valor'}
+                            aria-label={`Valor specification ${index + 1}`}
+                          />
+                          <button
+                            type="button"
+                            className="product-detail-secondary-button admin-spec-remove-button"
+                            onClick={() => removeSpecificationRow(index)}
+                          >
+                            Eliminar
+                          </button>
+                        </div>
+                      ))}
+                      <button
+                        type="button"
+                        className="product-detail-secondary-button admin-spec-add-button"
+                        onClick={addSpecificationRow}
+                      >
+                        Agregar specification
+                      </button>
+                    </div>
+
+                    <label className="admin-checkbox-field" htmlFor="admin-product-visible">
+                      <input
+                        id="admin-product-visible"
+                        type="checkbox"
+                        checked={productForm.isVisible}
+                        onChange={(event) =>
+                          handleProductFormChange('isVisible', event.target.checked)
+                        }
+                      />
+                      <span>Producto visible en catalogo</span>
+                    </label>
+
+                    <label className="admin-checkbox-field" htmlFor="admin-product-featured">
+                      <input
+                        id="admin-product-featured"
+                        type="checkbox"
+                        checked={productForm.featured}
+                        onChange={(event) =>
+                          handleProductFormChange('featured', event.target.checked)
+                        }
+                      />
+                      <span>
+                        Producto destacado en home
+                        {productForm.featured && <span className="admin-featured-inline-badge">Destacado activo</span>}
+                      </span>
+                    </label>
+
+                    <div className="cart-inline-actions">
+                      <button
+                        type="submit"
+                        className="product-detail-button"
+                        disabled={productSubmitting}
+                      >
+                        {productSubmitting
+                          ? 'Guardando producto...'
+                          : productForm.id
+                            ? 'Actualizar producto'
+                            : 'Crear producto'}
+                      </button>
+                    </div>
+                  </form>
+
+                  <div className="admin-image-preview-card">
+                    <div className="admin-image-preview-copy">
+                      <span className="order-label">Preview de imagen</span>
+                      <strong>{productForm.title.trim() || 'Producto en preparacion'}</strong>
+                      <p>
+                        Asi se vera la referencia visual del producto mientras trabajamos solo con
+                        `imageUrl`.
+                      </p>
+                      <p>
+                        Por ahora debe ser una URL directa a imagen; mas adelante este bloque puede
+                        conectarse a upload real.
+                      </p>
+                    </div>
+                    <AdminProductImage
+                      imageUrl={productForm.imageUrl.trim() || undefined}
+                      title={productForm.title.trim() || SITE.productFallbackTitle}
+                      onImageError={() => setProductImagePreviewFailed(true)}
+                      categoryName={
+                        categories.find(
+                          (category) => String(category.id) === productForm.categoryId,
+                        )?.name ?? 'Sin categoria'
+                      }
+                    />
+                  </div>
+                </section>
+
+                <section className="admin-panel-card">
+                  <div className="admin-panel-card-header">
+                    <div>
+                      <span className="order-label">Filtros del catalogo</span>
+                      <h3>Encuentra y ordena productos rapidamente</h3>
+                    </div>
+                    <span className="admin-toolbar-note">
+                      Total: {products.length} | Visibles: {visibleProducts.length} | Ocultos:{' '}
+                      {hiddenProducts.length}
+                    </span>
+                  </div>
+
+                  <div className="admin-filters-grid">
+                    <div>
+                      <label className="cart-summary-label" htmlFor="admin-product-search">
+                        Buscar por nombre o slug
+                      </label>
+                      <input
+                        id="admin-product-search"
+                        className="cart-summary-input"
+                        type="search"
+                        value={productSearch}
+                        onChange={(event) => setProductSearch(event.target.value)}
+                        placeholder="Ej: pikachu o figura-pikachu"
+                      />
+                    </div>
+                    <div>
+                      <label
+                        className="cart-summary-label"
+                        htmlFor="admin-product-filter-category"
+                      >
+                        Categoria
+                      </label>
+                      <select
+                        id="admin-product-filter-category"
+                        className="cart-summary-input"
+                        value={productCategoryFilter}
+                        onChange={(event) => setProductCategoryFilter(event.target.value)}
+                      >
+                        <option value="all">
+                          {categoriesLoading ? 'Cargando categorias...' : 'Todas'}
+                        </option>
+                        {categories.map((category) => (
+                          <option key={category.id} value={category.id}>
+                            {getCategoryDisplayName(category)}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label
+                        className="cart-summary-label"
+                        htmlFor="admin-product-filter-visibility"
+                      >
+                        Visibilidad
+                      </label>
+                      <select
+                        id="admin-product-filter-visibility"
+                        className="cart-summary-input"
+                        value={productVisibilityFilter}
+                        onChange={(event) =>
+                          setProductVisibilityFilter(
+                            event.target.value as 'all' | 'visible' | 'hidden',
+                          )
+                        }
+                      >
+                        <option value="all">Todos</option>
+                        <option value="visible">Solo visibles</option>
+                        <option value="hidden">Solo ocultos</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="cart-summary-label" htmlFor="admin-product-filter-stock">
+                        Stock
+                      </label>
+                      <select
+                        id="admin-product-filter-stock"
+                        className="cart-summary-input"
+                        value={productStockFilter}
+                        onChange={(event) =>
+                          setProductStockFilter(event.target.value as 'all' | 'low' | 'out')
+                        }
+                      >
+                        <option value="all">Todo stock</option>
+                        <option value="low">Stock bajo</option>
+                        <option value="out">Sin stock</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="cart-summary-label" htmlFor="admin-product-sort">
+                        Orden
+                      </label>
+                      <select
+                        id="admin-product-sort"
+                        className="cart-summary-input"
+                        value={productSortOption}
+                        onChange={(event) =>
+                          setProductSortOption(event.target.value as ProductSortOption)
+                        }
+                      >
+                        <option value="newest">Mas recientes</option>
+                        <option value="oldest">Mas antiguos</option>
+                        <option value="price_desc">Precio mayor</option>
+                        <option value="price_asc">Precio menor</option>
+                        <option value="low_stock">Stock bajo</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="cart-summary-label" htmlFor="admin-product-filter-featured">
+                        Destacado
+                      </label>
+                      <select
+                        id="admin-product-filter-featured"
+                        className="cart-summary-input"
+                        value={productFeaturedFilter}
+                        onChange={(event) =>
+                          setProductFeaturedFilter(
+                            event.target.value as 'all' | 'featured' | 'normal',
+                          )
+                        }
+                      >
+                        <option value="all">Todos</option>
+                        <option value="featured">Solo destacados</option>
+                        <option value="normal">No destacados</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <label className="admin-checkbox-field" htmlFor="admin-group-by-category">
+                    <input
+                      id="admin-group-by-category"
+                      type="checkbox"
+                      checked={groupProductsByCategory}
+                      onChange={(event) => setGroupProductsByCategory(event.target.checked)}
+                    />
+                    <span>Mostrar catalogo agrupado por categoria</span>
+                  </label>
+
+                  <span className="admin-filter-summary">
+                    Mostrando {filteredProducts.length} de {products.length} producto(s).
+                  </span>
+                </section>
+
+                <section className="admin-panel-card">
+                  <div className="admin-panel-card-header">
+                    <div>
+                      <span className="order-label">Catalogo admin</span>
+                      <h3>Productos registrados</h3>
+                    </div>
+                    <strong>{filteredProducts.length} producto(s)</strong>
+                  </div>
+
+                  {productsLoading && <LoadingState message="Cargando productos del panel..." />}
+                  {!productsLoading && filteredProducts.length === 0 && (
+                    <EmptyState
+                      compact
+                      tag="Productos"
+                      title="No hay productos para los filtros actuales"
+                      description="Prueba otro filtro o crea un producto nuevo desde este panel."
+                    />
+                  )}
+
+                  {!productsLoading && filteredProducts.length > 0 && (
+                    <div className="admin-table-shell">
+                      {!groupProductsByCategory && (
+                        <>
+                          <div className="admin-table-head admin-product-table-head">
+                            <span>Producto</span>
+                            <span>Datos</span>
+                            <span>Estados</span>
+                            <span>Acciones</span>
+                          </div>
+                          <div className="admin-product-list">
+                            {orderedFilteredProducts.map((product) => renderProductRow(product))}
+                          </div>
+                        </>
+                      )}
+
+                      {groupProductsByCategory && (
+                        <div className="admin-grouped-products">
+                          {groupedProducts.map((group) => (
+                            <details key={group.category.id} className="admin-category-group" open>
+                              <summary>
+                                <span>{getCategoryDisplayName(group.category)}</span>
+                                <strong>{group.products.length} producto(s)</strong>
+                              </summary>
+                              <div className="admin-table-head admin-product-table-head">
+                                <span>Producto</span>
+                                <span>Datos</span>
+                                <span>Estados</span>
+                                <span>Acciones</span>
+                              </div>
+                              <div className="admin-product-list">
+                                {group.products.map((product) => renderProductRow(product))}
+                              </div>
+                            </details>
+                          ))}
+
+                          {uncategorizedProducts.length > 0 && (
+                            <details className="admin-category-group" open>
+                              <summary>
+                                <span>Sin categoria</span>
+                                <strong>{uncategorizedProducts.length} producto(s)</strong>
+                              </summary>
+                              <div className="admin-table-head admin-product-table-head">
+                                <span>Producto</span>
+                                <span>Datos</span>
+                                <span>Estados</span>
+                                <span>Acciones</span>
+                              </div>
+                              <div className="admin-product-list">
+                                {uncategorizedProducts.map((product) => renderProductRow(product))}
+                              </div>
+                            </details>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </section>
+              </section>
+            )}
+
+            {activeSection === 'orders' && (
+              <section className="orders-layout">
+                <header className="section-heading">
+                  <h2>Gestion de ordenes</h2>
+                  <span>Revisa compras, detalle de clientes y cambia el estado de despacho.</span>
+                </header>
+
+                {orderError && <div className="message-box message-box-error">{orderError}</div>}
+                {orderMessage && <div className="message-box auth-success-box">{orderMessage}</div>}
+
+                {ordersLoading && <LoadingState message="Cargando ordenes del panel..." />}
+
+                {!ordersLoading && orders.length === 0 && (
+                  <EmptyState
+                    compact
+                    tag="Ordenes"
+                    title="Aun no hay ordenes registradas"
+                    description="Cuando entren compras reales o de prueba, apareceran aqui para administrarlas."
+                  />
+                )}
+
+                {!ordersLoading && orders.length > 0 && (
+                  <div className="admin-orders-layout">
+                    <div className="admin-table-shell">
+                      <div className="admin-table-head admin-orders-table-head">
+                        <span>Orden</span>
+                        <span>Cliente</span>
+                        <span>Total</span>
+                        <span>Estado</span>
+                        <span>Acciones</span>
+                      </div>
+                      <div className="orders-list">
+                        {orders.map((order) => (
+                          <article key={order.id} className="order-card">
+                            <div className="order-card-header">
+                              <div>
+                                <span className="order-label">Orden #{order.id}</span>
+                                <h3>{new Date(order.createdAt).toLocaleDateString(BUSINESS.locale)}</h3>
+                              </div>
+                              <div className="order-summary-meta">
+                                <span className="order-status">
+                                  {getOrderStatusLabel(order.status)}
+                                </span>
+                                <strong>{formatPrice(order.total)}</strong>
+                              </div>
+                            </div>
+
+                            <div className="admin-order-summary-row">
+                              <div>
+                                <span className="order-label">Cliente</span>
+                                <p>{getOrderCustomerName(order)}</p>
+                              </div>
+                              <div>
+                                <span className="order-label">Contacto</span>
+                                <p>
+                                  {order.customerPhone ??
+                                    getOrderCustomerEmail(order) ??
+                                    'Sin telefono'}
+                                </p>
+                              </div>
+                              <div>
+                                <span className="order-label">Pago</span>
+                                <p>{getPaymentMethodLabel(order.paymentMethod)}</p>
+                              </div>
+                            </div>
+
+                            <div className="order-actions admin-order-actions">
+                              <button
+                                type="button"
+                                className="product-detail-secondary-button"
+                                onClick={() => void handleSelectOrder(order.id)}
+                                disabled={orderBusyId === order.id}
+                              >
+                                {orderBusyId === order.id && selectedOrder?.id !== order.id
+                                  ? 'Cargando...'
+                                  : selectedOrder?.id === order.id
+                                    ? 'Ocultar detalle'
+                                    : 'Ver detalle'}
+                              </button>
+                              <select
+                                className="admin-status-select"
+                                value={order.status}
+                                onChange={(event) =>
+                                  void handleStatusChange(order.id, event.target.value)
+                                }
+                                disabled={orderBusyId === order.id}
+                              >
+                                {ADMIN_ORDER_STATUSES.map((status) => (
+                                  <option key={status} value={status}>
+                                    {getOrderStatusLabel(status)}
+                                  </option>
+                                ))}
+                              </select>
+                              {order.status !== 'paid' && (
+                                <button
+                                  type="button"
+                                  className="product-detail-secondary-button"
+                                  onClick={() => void handleStatusChange(order.id, 'paid')}
+                                  disabled={orderBusyId === order.id}
+                                >
+                                  Marcar pagada
+                                </button>
+                              )}
+                            </div>
+
+                            {selectedOrder?.id === order.id && (
+                              <div className="admin-order-inline-detail">
+                                <div className="admin-panel-card-header">
+                                  <div>
+                                    <span className="order-label">Detalle de orden</span>
+                                    <h3>Orden #{selectedOrder.id}</h3>
+                                  </div>
+                                  <span className="order-status">
+                                    {getOrderStatusLabel(selectedOrder.status)}
+                                  </span>
+                                </div>
+
+                                <div className="admin-order-detail-body">
+                                  <div className="order-meta-grid">
+                                    <div>
+                                      <span className="order-label">Estado</span>
+                                      <p>{getOrderStatusLabel(selectedOrder.status)}</p>
+                                    </div>
+                                    <div>
+                                      <span className="order-label">Tipo</span>
+                                      <p>{getOrderCustomerTypeLabel(selectedOrder)}</p>
+                                    </div>
+                                    <div>
+                                      <span className="order-label">Metodo de pago</span>
+                                      <p>{getPaymentMethodLabel(selectedOrder.paymentMethod)}</p>
+                                    </div>
+                                    <div>
+                                      <span className="order-label">Nombre</span>
+                                      <p>{getOrderCustomerName(selectedOrder)}</p>
+                                    </div>
+                                    <div>
+                                      <span className="order-label">Email</span>
+                                      <p>
+                                        {getOrderCustomerEmail(selectedOrder) ??
+                                          'Email no informado'}
+                                      </p>
+                                    </div>
+                                    <div>
+                                      <span className="order-label">Telefono</span>
+                                      <p>{selectedOrder.customerPhone ?? 'No informado'}</p>
+                                    </div>
+                                    <div>
+                                      <span className="order-label">Total</span>
+                                      <p>{formatPrice(selectedOrder.total)}</p>
+                                    </div>
+                                  </div>
+
+                                  <div>
+                                    <span className="order-label">Direccion de envio</span>
+                                    <p className="admin-order-address">
+                                      {selectedOrder.shippingAddress || 'No informada'}
+                                    </p>
+                                  </div>
+
+                                  <div className="order-items-list">
+                                    {selectedOrder.items.map((item) => (
+                                      <div key={item.id} className="order-item-row">
+                                        <span>Producto #{item.productId}</span>
+                                        <span>Cantidad: {item.quantity}</span>
+                                        <strong>
+                                          {formatPrice(Number(item.unitPrice) * item.quantity)}
+                                        </strong>
+                                      </div>
+                                    ))}
+                                  </div>
+
+                                  <div className="admin-order-inline-actions">
+                                    <label className="cart-summary-label" htmlFor={`order-status-${order.id}`}>
+                                      Cambiar estado
+                                    </label>
+                                    <select
+                                      id={`order-status-${order.id}`}
+                                      className="admin-status-select"
+                                      value={selectedOrder.status}
+                                      onChange={(event) =>
+                                        void handleStatusChange(selectedOrder.id, event.target.value)
+                                      }
+                                      disabled={orderBusyId === selectedOrder.id}
+                                    >
+                                      {ADMIN_ORDER_STATUSES.map((status) => (
+                                        <option key={status} value={status}>
+                                          {getOrderStatusLabel(status)}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  </div>
+                                </div>
+                              </div>
+                            )}
+                          </article>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </section>
+            )}
+          </div>
+        </section>
+      </main>
+
+      <SiteFooter />
+    </div>
+  );
+}
