@@ -6,6 +6,7 @@ import { Product } from './entities/product.entity';
 import { Category } from '../categories/entities/category.entity';
 import { UpdateProductDto } from './dto/update-product.dto';
 import { INITIAL_SEED_PRODUCTS } from './seed-products';
+import { TEMPLATE_TEST_PRODUCT_PATTERNS } from '../template/template.config';
 import { ProductReview } from './entities/product-review.entity';
 
 @Injectable()
@@ -344,14 +345,11 @@ export class ProductsService {
     const normalizedImageUrl = (product.imageUrl ?? '').trim().toLowerCase();
 
     return (
-      normalizedImageUrl.includes('example.com') ||
-      normalizedDescription === 'figura de colección retro inspirada en anime clásico.'.toLowerCase() ||
-      normalizedDescription === 'figura de coleccion retro inspirada en anime clasico.' ||
-      normalizedSlug === 'slug-feo' ||
-      normalizedSlug === 'figura-retro-anime' ||
-      normalizedSlug.includes(' ') ||
-      normalizedTitle === 'iron man' ||
-      normalizedTitle === 'figura retro pikachu'
+      TEMPLATE_TEST_PRODUCT_PATTERNS.imageUrlIncludes.some((p) => normalizedImageUrl.includes(p)) ||
+      TEMPLATE_TEST_PRODUCT_PATTERNS.exactDescriptions.some((d) => normalizedDescription === d) ||
+      TEMPLATE_TEST_PRODUCT_PATTERNS.exactSlugs.some((s) => normalizedSlug === s) ||
+      TEMPLATE_TEST_PRODUCT_PATTERNS.slugContains.some((p) => normalizedSlug.includes(p)) ||
+      TEMPLATE_TEST_PRODUCT_PATTERNS.exactTitles.some((t) => normalizedTitle === t)
     );
   }
 
