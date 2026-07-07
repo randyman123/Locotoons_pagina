@@ -5,7 +5,8 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { QueryFailedError, Repository } from 'typeorm';
+import { Repository } from 'typeorm';
+import { isDuplicateEntryError, isForeignKeyConstraintError } from '../common/database-error.helpers';
 import { Category } from './entities/category.entity';
 import { CreateCategoryDto } from './dto/create-category.dto';
 import { UpdateCategoryDto } from './dto/update-category.dto';
@@ -55,7 +56,7 @@ export class CategoriesService {
 
       return createdCategory;
     } catch (error) {
-      if (this.isDuplicateCategoryError(error)) {
+      if (isDuplicateEntryError(error)) {
         throw new ConflictException('La categoria ya existe');
       }
 
@@ -237,7 +238,7 @@ export class CategoriesService {
         description: category.description,
       });
     } catch (error) {
-      if (this.isDuplicateCategoryError(error)) {
+      if (isDuplicateEntryError(error)) {
         throw new ConflictException('La categoria ya existe');
       }
 
@@ -261,7 +262,7 @@ export class CategoriesService {
     try {
       await this.categoryRepository.remove(category);
     } catch (error) {
-      if (this.isForeignKeyConstraintError(error)) {
+      if (isForeignKeyConstraintError(error)) {
         throw new ConflictException('No se puede eliminar la categoria porque tiene productos asociados');
       }
 
@@ -269,24 +270,6 @@ export class CategoriesService {
     }
 
     return { deleted: true, id };
-  }
-
-  private isDuplicateCategoryError(error: unknown): boolean {
-    if (!(error instanceof QueryFailedError)) {
-      return false;
-    }
-
-    const driverError = error.driverError as { code?: string; errno?: number } | undefined;
-    return driverError?.code === 'ER_DUP_ENTRY' || driverError?.errno === 1062;
-  }
-
-  private isForeignKeyConstraintError(error: unknown): boolean {
-    if (!(error instanceof QueryFailedError)) {
-      return false;
-    }
-
-    const driverError = error.driverError as { code?: string; errno?: number } | undefined;
-    return driverError?.code === 'ER_ROW_IS_REFERENCED_2' || driverError?.errno === 1451;
   }
 
   private normalizeCategoryValue(value: string): string {

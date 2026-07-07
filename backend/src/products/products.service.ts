@@ -1,6 +1,7 @@
 import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { QueryFailedError, Repository } from 'typeorm';
+import { Repository } from 'typeorm';
+import { isForeignKeyConstraintError } from '../common/database-error.helpers';
 import { CreateProductDto } from './dto/create-product.dto';
 import { Product } from './entities/product.entity';
 import { Category } from '../categories/entities/category.entity';
@@ -293,7 +294,7 @@ export class ProductsService {
     try {
       await this.productRepository.remove(product);
     } catch (error) {
-      if (this.isForeignKeyConstraintError(error)) {
+      if (isForeignKeyConstraintError(error)) {
         product.isVisible = false;
         await this.productRepository.save(product);
 
@@ -311,15 +312,6 @@ export class ProductsService {
     }
 
     return { deleted: true, hidden: false, id, cartRefs, orderRefs };
-  }
-
-  private isForeignKeyConstraintError(error: unknown): boolean {
-    if (!(error instanceof QueryFailedError)) {
-      return false;
-    }
-
-    const driverError = error.driverError as { code?: string; errno?: number } | undefined;
-    return driverError?.code === 'ER_ROW_IS_REFERENCED_2' || driverError?.errno === 1451;
   }
 
   private async countCartReferences(productId: number): Promise<number> {
