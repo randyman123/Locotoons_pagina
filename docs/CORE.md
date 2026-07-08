@@ -136,6 +136,23 @@ export const STORE_CATEGORY_PRESETS = [
 
 Estos presets se usan como fallback visual cuando la BD aún no tiene categorías cargadas, y como referencia para el seed inicial. **Al derivar:** reemplazar con las categorías del negocio cliente.
 
+### `backend/src/template/template.config.ts`
+
+Es el equivalente backend de los archivos de configuración anteriores: la Zona Config del lado servidor. Define la identidad de negocio que consumen `app.module.ts`, `auth.module.ts` y los scripts de seed:
+
+```typescript
+export const TEMPLATE_SWAGGER = { title, description, version };
+export const TEMPLATE_JWT_SECRET_FALLBACK = '...';
+export const TEMPLATE_DB = { defaultName: '...' };
+export const TEMPLATE_OFFICIAL_CATEGORIES = [ ... ];
+export const TEMPLATE_SEED_PRODUCTS = [ ... ];
+export const TEMPLATE_TEST_PRODUCT_PATTERNS = { ... };
+```
+
+**Al derivar:** este es el único archivo backend que se modifica para cambiar de rubro. `app.module.ts` y `auth.module.ts` importan sus constantes (`TEMPLATE_DB.defaultName`, `TEMPLATE_JWT_SECRET_FALLBACK`) en lugar de tener valores de negocio hardcodeados directamente.
+
+Ver la sección **ZONA DEMO** más abajo para presets ya escritos que se pueden copiar sobre este archivo.
+
 ### Variables de entorno del backend
 
 El backend acepta dos conjuntos de variables (local y Railway):
@@ -150,6 +167,40 @@ JWT_SECRET
 ```
 
 **Al derivar:** crear `backend/.env` con las variables del nuevo negocio. Nunca commitear `.env`.
+
+---
+
+## ZONA DEMO — Blueprints (`backend/src/template/demos/`)
+
+La Zona Demo no es una cuarta zona del framework — es un área auxiliar dentro de la Zona Config. Contiene blueprints completos y listos para usar de `template.config.ts` para distintos rubros (restaurante, ecommerce de coleccionables, etc.), pensados para acelerar la derivación del template a un nuevo tipo de negocio.
+
+```
+backend/src/template/
+├── template.config.ts     ← Config ACTIVA. La única que el código importa.
+└── demos/
+    ├── restaurante.config.ts
+    └── (futuros presets por rubro)
+```
+
+### Regla crítica: los archivos en `demos/` NO se importan automáticamente
+
+Ningún módulo del backend importa nada desde `backend/src/template/demos/`. Son archivos de referencia, inertes por diseño — TypeScript los compila porque son sintácticamente válidos, pero nada en `app.module.ts`, `auth.module.ts` ni en los scripts de seed los consume. Si `demos/` se borrara por completo, el template seguiría compilando y desplegando exactamente igual.
+
+### Cómo activar una demo
+
+Activar un preset es un reemplazo manual y completo, no una importación condicional ni una variable de entorno:
+
+1. Copiar el contenido completo de `demos/<rubro>.config.ts` sobre `template.config.ts`.
+2. Verificar que la BD esté vacía, o ejecutar en orden (ver comentario de cabecera de cada archivo demo):
+   - `POST /api/products/clean-test-data` — oculta los productos del rubro anterior
+   - `POST /api/categories/sync-official` — reemplaza las categorías
+   - `POST /api/products/sync-seed` — carga el catálogo del nuevo rubro
+
+No existe mecanismo de selección en runtime (variable de entorno, feature flag, etc.) que elija entre `template.config.ts` y un archivo de `demos/`. Activar una demo es una edición de código que se commitea, no una configuración de entorno.
+
+### Advertencia: un deploy = un negocio = un `template.config.ts` activo
+
+`template.config.ts` no es multi-tenant y no está diseñado para serlo. En todo momento existe exactamente un preset activo por deploy: el que esté escrito en `template.config.ts`. Cambiar de rubro implica sobreescribir ese archivo y volver a desplegar — no correr dos rubros simultáneamente desde el mismo backend. Si en el futuro se necesita servir múltiples negocios desde un mismo backend, eso es una decisión arquitectónica nueva (multi-tenancy real), no una extensión del patrón de `demos/`.
 
 ---
 
@@ -209,3 +260,9 @@ npx ts-node src/scripts/make-admin.ts                 # Eleva un usuario a admin
   → Zona Cliente: admin panel O
   → Zona Config: categories.config.ts (para el preset visual)
 ```
+
+---
+
+## Deuda técnica conocida
+
+Este documento describe cómo **debería** funcionar la separación de zonas. Los defectos y ambigüedades descubiertos durante derivaciones reales — casos donde el Core no cumple sus propias reglas, o donde esta documentación quedó incompleta — se registran en [`docs/CORE_DEBT.md`](./CORE_DEBT.md), no aquí. Antes de asumir que una zona funciona como se describe arriba, revisar ese registro.

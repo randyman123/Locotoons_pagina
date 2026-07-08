@@ -312,6 +312,9 @@ Para cambios de schema destructivos en producción: crear una migración manual 
 │   ├── .env               ← Variables locales (no commitear)
 │   ├── .env.example       ← Template de variables (sí commitear)
 │   └── src/
+│       └── template/
+│           ├── template.config.ts  ← Zona Config del backend — personalizar aquí al derivar
+│           └── demos/               ← Zona Demo — blueprints listos para copiar sobre template.config.ts (ver docs/CORE.md)
 └── frontend/
     └── src/
         └── config/        ← Zona Config — personalizar aquí al derivar
