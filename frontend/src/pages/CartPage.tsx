@@ -76,7 +76,7 @@ export function CartPage() {
 
   useEffect(() => {
     const storedProfile = readCustomerProfile();
-    setShippingAddress(storedProfile.shippingAddress || 'Av. Siempre Viva 123, Santiago');
+    setShippingAddress(storedProfile.shippingAddress || BUSINESS.shipping.addressPlaceholder);
     setGuestName(storedProfile.name);
     setGuestEmail(storedProfile.email);
     setGuestPhone(storedProfile.phone);

@@ -6,6 +6,7 @@ import { AuthService } from "./auth.service";
 import { AuthController } from "./auth.controller";
 import { JwtStrategy } from "./jwt.strategy";
 import { UsersModule } from "../users/users.module";
+import { TEMPLATE_JWT_SECRET_FALLBACK } from "../template/template.config";
 
 @Module({
   imports: [
@@ -17,7 +18,7 @@ import { UsersModule } from "../users/users.module";
       useFactory: async (
         configService: ConfigService,
       ): Promise<JwtModuleOptions> => ({
-        secret: configService.get<string>("JWT_SECRET", "locotoons-secret"),
+        secret: configService.get<string>("JWT_SECRET", TEMPLATE_JWT_SECRET_FALLBACK),
         signOptions: {
           expiresIn: configService.get<any>("JWT_EXPIRES_IN", "3600s"),
         },

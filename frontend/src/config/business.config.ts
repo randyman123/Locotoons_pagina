@@ -28,4 +28,7 @@ export const BUSINESS = {
     storefrontRefresh: 'locotoons:storefront-refresh',
     cartRefresh: 'locotoons:cart-refresh',
   },
+  shipping: {
+    addressPlaceholder: 'Av. Siempre Viva 123, Santiago',
+  },
 };

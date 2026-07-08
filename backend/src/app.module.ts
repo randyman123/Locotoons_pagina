@@ -3,6 +3,7 @@ import { ConfigService } from "@nestjs/config";
 import { TypeOrmModule } from "@nestjs/typeorm";
 import { AppController } from "./app.controller";
 import { AppService } from "./app.service";
+import { TEMPLATE_DB } from "./template/template.config";
 import { AuthModule } from "./auth/auth.module";
 import { AppConfigModule } from "./config/config.module";
 import { CategoriesModule } from "./categories/categories.module";
@@ -22,13 +23,6 @@ import { UsersModule } from "./users/users.module";
         const dbPort =
           configService.get("DB_PORT") || configService.get("MYSQLPORT") || 3306;
 
-        console.log("Database env check", {
-          DB_HOST: configService.get("DB_HOST"),
-          DB_PORT: configService.get("DB_PORT"),
-          MYSQLHOST: configService.get("MYSQLHOST"),
-          MYSQLPORT: configService.get("MYSQLPORT"),
-        });
-
         return {
           type: "mysql",
           host:
@@ -47,7 +41,7 @@ import { UsersModule } from "./users/users.module";
           database:
             configService.get("DB_NAME") ||
             configService.get("MYSQLDATABASE") ||
-            "locotoons_dev",
+            TEMPLATE_DB.defaultName,
           entities: [__dirname + "/**/*.entity{.ts,.js}"],
           synchronize: true,
         };

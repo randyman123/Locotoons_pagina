@@ -17,6 +17,12 @@ export const TEMPLATE_SWAGGER = {
 
 export const TEMPLATE_JWT_SECRET_FALLBACK = 'locotoons-secret';
 
+// ── Base de datos ─────────────────────────────────────────────────────────────
+
+export const TEMPLATE_DB = {
+  defaultName: 'locotoons_dev',
+} as const;
+
 // ── Categorías oficiales ──────────────────────────────────────────────────────
 
 export const TEMPLATE_OFFICIAL_CATEGORIES = [
